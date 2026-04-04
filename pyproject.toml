@@ -1,0 +1,20 @@
+[project]
+name = "codefix-arena"
+version = "0.1.0"
+description = "OpenEnv coding assistant environment"
+authors = [
+    { name="Raj Borade" }
+]
+dependencies = [
+    "openenv-core",
+    "openai",
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "gradio",
+    "python-dotenv"
+]
+
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
