@@ -1,21 +1,79 @@
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import gradio as gr
 import uvicorn
 from fastapi import Body, FastAPI
 from fastapi.encoders import jsonable_encoder
+from pydantic import BaseModel, Field
 
 from env.coding_env import CodingAssistantEnv
 from env.runtime_debugger import RuntimeDebugger
 
 env = CodingAssistantEnv()
 AGENT_TRACE = []
-LAST_STATE = {}
+LAST_STATE: Dict[str, Any] = {}
 
 
-def to_jsonable(data):
+class ResetRequest(BaseModel):
+    task_id: Optional[int] = None
+
+
+class ActionRequest(BaseModel):
+    tool: str
+    path: Optional[str] = None
+    content: Optional[str] = None
+    command: Optional[str] = None
+
+
+class CommandResultModel(BaseModel):
+    status: str = ""
+    stdout: str = ""
+    stderr: str = ""
+
+
+class ObservationModel(BaseModel):
+    task_id: int
+    task_type: str
+    difficulty: str
+    language: str
+    title: str
+    step: int
+    max_steps: int
+    workspace_dir: str
+    files: List[str]
+    last_command_result: CommandResultModel
+
+
+class StepResponseModel(BaseModel):
+    observation: ObservationModel
+    reward: float
+    done: bool
+    info: Dict[str, Any] = Field(default_factory=dict)
+
+
+def to_jsonable(data: Any) -> Any:
     return jsonable_encoder(data)
+
+
+def build_observation_model(state: Dict[str, Any]) -> ObservationModel:
+    last_command_result = state.get("last_command_result") or {}
+    return ObservationModel(
+        task_id=int(state.get("task_id", 0)),
+        task_type=str(state.get("task_type", "")),
+        difficulty=str(state.get("difficulty", "")),
+        language=str(state.get("language", "")),
+        title=str(state.get("title", "")),
+        step=int(state.get("step", 0)),
+        max_steps=int(state.get("max_steps", 0)),
+        workspace_dir=str(state.get("workspace_dir", "")),
+        files=list(state.get("files", [])),
+        last_command_result=CommandResultModel(
+            status=str(last_command_result.get("status", "")),
+            stdout=str(last_command_result.get("stdout", "")),
+            stderr=str(last_command_result.get("stderr", "")),
+        ),
+    )
 
 
 def snapshot_state(state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -924,10 +982,10 @@ Test your own code here:
     return demo
 
 
-app = FastAPI(title="CodeFix Arena OpenEnv Server")
+base_app = FastAPI(title="CodeFix Arena OpenEnv Server")
 
 
-@app.get("/")
+@base_app.get("/")
 def root():
     return {
         "name": "codefix-arena",
@@ -936,10 +994,9 @@ def root():
     }
 
 
-@app.post("/reset")
-def reset_endpoint(payload: Optional[Dict[str, Any]] = Body(default=None)):
-    body = payload or {}
-    task_id = body.get("task_id")
+@base_app.post("/reset", response_model=StepResponseModel)
+def reset_endpoint(payload: Optional[ResetRequest] = Body(default=None)):
+    task_id = payload.task_id if payload else None
 
     if task_id is None:
         state = env.reset()
@@ -948,36 +1005,36 @@ def reset_endpoint(payload: Optional[Dict[str, Any]] = Body(default=None)):
 
     snapshot_state(state)
 
-    return {
-        "observation": to_jsonable(state),
-        "reward": 0.0,
-        "done": False,
-        "info": {
-            "message": "Environment reset successful."
-        }
-    }
+    return StepResponseModel(
+        observation=build_observation_model(state),
+        reward=0.0,
+        done=False,
+        info={"message": "Environment reset successful."},
+    )
 
 
-@app.post("/step")
-def step_endpoint(action: Dict[str, Any] = Body(...)):
-    state, reward, done, info = env.step(action)
+@base_app.post("/step", response_model=StepResponseModel)
+def step_endpoint(action: ActionRequest):
+    action_payload = action.model_dump(exclude_none=True)
+    state, reward, done, info = env.step(action_payload)
     snapshot_state(state)
 
-    return {
-        "observation": to_jsonable(state),
-        "reward": float(reward),
-        "done": bool(done),
-        "info": to_jsonable(info),
-    }
+    return StepResponseModel(
+        observation=build_observation_model(state),
+        reward=float(reward),
+        done=bool(done),
+        info=to_jsonable(info),
+    )
 
 
-@app.get("/state")
+@base_app.get("/state", response_model=ObservationModel)
 def state_endpoint():
-    return snapshot_state()
+    current_state = snapshot_state()
+    return build_observation_model(current_state)
 
 
 demo = create_demo()
-app = gr.mount_gradio_app(app, demo, path="/ui")
+app = gr.mount_gradio_app(base_app, demo, path="/ui")
 
 
 if __name__ == "__main__":
