@@ -1,10 +1,39 @@
 import os
+from typing import Any, Dict, Optional
+
 import gradio as gr
+import uvicorn
+from fastapi import Body, FastAPI
+from fastapi.encoders import jsonable_encoder
+
 from env.coding_env import CodingAssistantEnv
 from env.runtime_debugger import RuntimeDebugger
 
 env = CodingAssistantEnv()
 AGENT_TRACE = []
+LAST_STATE = {}
+
+
+def to_jsonable(data):
+    return jsonable_encoder(data)
+
+
+def snapshot_state(state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    global LAST_STATE
+
+    if state is not None:
+        LAST_STATE = state
+        return to_jsonable(state)
+
+    try:
+        if hasattr(env, "state") and callable(getattr(env, "state")):
+            current = env.state()
+            LAST_STATE = current
+            return to_jsonable(current)
+    except Exception:
+        pass
+
+    return to_jsonable(LAST_STATE)
 
 
 def format_task_info(state):
@@ -97,6 +126,7 @@ def load_task_console(task_id):
 
     try:
         state = env.reset(task_id=int(task_id))
+        snapshot_state(state)
         AGENT_TRACE.append(f"Loaded task {state['task_id']} ({state['title']}).")
 
         files = state.get("files", [])
@@ -181,6 +211,7 @@ def load_task_console(task_id):
 def list_files_console():
     try:
         state, reward, done, info = env.step({"tool": "list_files"})
+        snapshot_state(state)
         files = info.get("tool_result", {}).get("files", [])
         AGENT_TRACE.append("Listed workspace files.")
         thinking = build_agent_thinking(AGENT_TRACE)
@@ -217,6 +248,7 @@ def read_file_console(path):
             "tool": "read_file",
             "path": path,
         })
+        snapshot_state(state)
 
         AGENT_TRACE.append(f"Read file: {path}.")
         content = info.get("tool_result", {}).get("content", "")
@@ -256,6 +288,7 @@ def write_file_console(path, content):
             "path": path,
             "content": content or "",
         })
+        snapshot_state(state)
 
         AGENT_TRACE.append(f"Wrote updated content to {path}.")
 
@@ -315,6 +348,7 @@ def run_command_console(command):
             "tool": "run_command",
             "command": command,
         })
+        snapshot_state(state)
 
         result = info.get("tool_result", {})
         stdout = result.get("stdout", "")
@@ -578,6 +612,7 @@ def auto_fix_console(task_id, current_path):
             "path": current_path,
             "content": fixed_code,
         })
+        snapshot_state(state)
 
         AGENT_TRACE.append(f"Auto-fix applied to {current_path}.")
 
@@ -669,172 +704,173 @@ def import_playground_file(file_path):
         return "python", "", f"Failed to import file.\nError: {e}"
 
 
-with gr.Blocks(title="CodeFix Arena") as demo:
-    gr.HTML("""
-    <div style="padding: 14px 6px 4px 6px;">
-        <h1 style="margin-bottom: 8px;">🚀 CodeFix Arena</h1>
-        <p style="font-size: 17px; margin-bottom: 8px;">
-            Debug. Refactor. Improve. Work with code like a real developer.
-        </p>
-        <p style="margin-top: 0; color: #666;">
-            Use <b>Arena</b> for guided coding challenges with evaluation and reasoning traces,
-            or switch to <b>Playground</b> to test your own files freely.
-        </p>
-    </div>
-    """)
+def create_demo():
+    with gr.Blocks(title="CodeFix Arena") as demo:
+        gr.HTML("""
+        <div style="padding: 14px 6px 4px 6px;">
+            <h1 style="margin-bottom: 8px;">🚀 CodeFix Arena</h1>
+            <p style="font-size: 17px; margin-bottom: 8px;">
+                Debug. Refactor. Improve. Work with code like a real developer.
+            </p>
+            <p style="margin-top: 0; color: #666;">
+                Use <b>Arena</b> for guided coding challenges with evaluation and reasoning traces,
+                or switch to <b>Playground</b> to test your own files freely.
+            </p>
+        </div>
+        """)
 
-    with gr.Tabs():
-        with gr.Tab("Arena"):
-            gr.Markdown("## 🧩 Guided Challenge Workspace")
+        with gr.Tabs():
+            with gr.Tab("Arena"):
+                gr.Markdown("## 🧩 Guided Challenge Workspace")
 
-            with gr.Row():
-                with gr.Column(scale=3):
-                    task_selector = gr.Dropdown(
-                        choices=[
-                            ("Task 1 - Debug (Easy)", 1),
-                            ("Task 2 - Refactor (Medium)", 2),
-                            ("Task 3 - Java Refactor (Hard)", 3),
-                        ],
-                        label="Choose Challenge",
-                        value=1,
+                with gr.Row():
+                    with gr.Column(scale=3):
+                        task_selector = gr.Dropdown(
+                            choices=[
+                                ("Task 1 - Debug (Easy)", 1),
+                                ("Task 2 - Refactor (Medium)", 2),
+                                ("Task 3 - Java Refactor (Hard)", 3),
+                            ],
+                            label="Choose Challenge",
+                            value=1,
+                        )
+                    with gr.Column(scale=1):
+                        load_button = gr.Button("Load Challenge", variant="primary")
+                    with gr.Column(scale=1):
+                        auto_fix_button = gr.Button("Apply Suggested Fix")
+
+                with gr.Row():
+                    task_info_box = gr.Textbox(label="Challenge Details", lines=6)
+                    status_box = gr.Textbox(label="Workspace Status", lines=6)
+                    verdict_box = gr.Textbox(label="Result Summary", lines=6)
+
+                gr.Markdown("### 📁 Project Workspace")
+
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        file_list_box = gr.Textbox(label="Project Files", lines=12)
+                        list_files_button = gr.Button("Refresh Files")
+                        file_path_input = gr.Textbox(label="Current File", placeholder="main.py")
+
+                        with gr.Row():
+                            read_file_button = gr.Button("Open File")
+                            write_file_button = gr.Button("Save Changes")
+
+                    with gr.Column(scale=2):
+                        file_content_box = gr.Code(label="Editor", language="python", lines=24)
+
+                gr.Markdown("### ⚡ Run and Inspect")
+
+                with gr.Row():
+                    command_input = gr.Textbox(
+                        label="Command",
+                        placeholder="python3 main.py"
                     )
-                with gr.Column(scale=1):
-                    load_button = gr.Button("Load Challenge", variant="primary")
-                with gr.Column(scale=1):
-                    auto_fix_button = gr.Button("Apply Suggested Fix")
+                    run_button = gr.Button("Run in Workspace", variant="primary")
 
-            with gr.Row():
-                task_info_box = gr.Textbox(label="Challenge Details", lines=6)
-                status_box = gr.Textbox(label="Workspace Status", lines=6)
-                verdict_box = gr.Textbox(label="Result Summary", lines=6)
+                with gr.Row():
+                    stdout_box = gr.Textbox(label="Output", lines=8)
+                    stderr_box = gr.Textbox(label="Errors / Warnings", lines=8)
 
-            gr.Markdown("### 📁 Project Workspace")
+                gr.Markdown("### 📊 Evaluation")
 
-            with gr.Row():
-                with gr.Column(scale=1):
-                    file_list_box = gr.Textbox(label="Project Files", lines=12)
-                    list_files_button = gr.Button("Refresh Files")
-                    file_path_input = gr.Textbox(label="Current File", placeholder="main.py")
+                with gr.Row():
+                    reward_box = gr.Textbox(label="Reward", lines=1)
+                    feedback_box = gr.Textbox(label="Feedback", lines=4)
 
-                    with gr.Row():
-                        read_file_button = gr.Button("Open File")
-                        write_file_button = gr.Button("Save Changes")
+                score_breakdown_box = gr.JSON(label="Score Breakdown")
 
-                with gr.Column(scale=2):
-                    file_content_box = gr.Code(label="Editor", language="python", lines=24)
+                with gr.Accordion("🧠 Agent Insights", open=True):
+                    agent_trace_box = gr.Textbox(label="Action Trace", lines=10)
+                    thinking_box = gr.Markdown(label="Thinking Viewer")
 
-            gr.Markdown("### ⚡ Run and Inspect")
-
-            with gr.Row():
-                command_input = gr.Textbox(
-                    label="Command",
-                    placeholder="python3 main.py"
-                )
-                run_button = gr.Button("Run in Workspace", variant="primary")
-
-            with gr.Row():
-                stdout_box = gr.Textbox(label="Output", lines=8)
-                stderr_box = gr.Textbox(label="Errors / Warnings", lines=8)
-
-            gr.Markdown("### 📊 Evaluation")
-
-            with gr.Row():
-                reward_box = gr.Textbox(label="Reward", lines=1)
-                feedback_box = gr.Textbox(label="Feedback", lines=4)
-
-            score_breakdown_box = gr.JSON(label="Score Breakdown")
-
-            with gr.Accordion("🧠 Agent Insights", open=True):
-                agent_trace_box = gr.Textbox(label="Action Trace", lines=10)
-                thinking_box = gr.Markdown(label="Thinking Viewer")
-
-            with gr.Accordion("💡 Debug Assistant", open=False):
-                gr.Markdown(
-                    """
+                with gr.Accordion("💡 Debug Assistant", open=False):
+                    gr.Markdown(
+                        """
 Ask natural questions like:
 - what is wrong here?
 - how should I fix this?
 - explain the error
 - what should I do next?
 """
+                    )
+                    user_message_box = gr.Textbox(
+                        label="Your Question",
+                        placeholder="For example: what is wrong here?"
+                    )
+                    assistant_button = gr.Button("Ask Assistant")
+                    assistant_reply_box = gr.Markdown(label="Assistant Reply")
+
+                load_button.click(
+                    fn=load_task_console,
+                    inputs=[task_selector],
+                    outputs=[
+                        task_info_box,
+                        file_list_box,
+                        file_path_input,
+                        file_content_box,
+                        command_input,
+                        status_box,
+                        stdout_box,
+                        stderr_box,
+                        reward_box,
+                        feedback_box,
+                        score_breakdown_box,
+                        agent_trace_box,
+                        verdict_box,
+                        thinking_box,
+                    ],
                 )
-                user_message_box = gr.Textbox(
-                    label="Your Question",
-                    placeholder="For example: what is wrong here?"
+
+                list_files_button.click(
+                    fn=list_files_console,
+                    inputs=[],
+                    outputs=[file_list_box, status_box, agent_trace_box, thinking_box],
                 )
-                assistant_button = gr.Button("Ask Assistant")
-                assistant_reply_box = gr.Markdown(label="Assistant Reply")
 
-            load_button.click(
-                fn=load_task_console,
-                inputs=[task_selector],
-                outputs=[
-                    task_info_box,
-                    file_list_box,
-                    file_path_input,
-                    file_content_box,
-                    command_input,
-                    status_box,
-                    stdout_box,
-                    stderr_box,
-                    reward_box,
-                    feedback_box,
-                    score_breakdown_box,
-                    agent_trace_box,
-                    verdict_box,
-                    thinking_box,
-                ],
-            )
+                read_file_button.click(
+                    fn=read_file_console,
+                    inputs=[file_path_input],
+                    outputs=[file_content_box, status_box, agent_trace_box, thinking_box],
+                )
 
-            list_files_button.click(
-                fn=list_files_console,
-                inputs=[],
-                outputs=[file_list_box, status_box, agent_trace_box, thinking_box],
-            )
+                write_file_button.click(
+                    fn=write_file_console,
+                    inputs=[file_path_input, file_content_box],
+                    outputs=[status_box, score_breakdown_box, agent_trace_box, verdict_box, thinking_box],
+                )
 
-            read_file_button.click(
-                fn=read_file_console,
-                inputs=[file_path_input],
-                outputs=[file_content_box, status_box, agent_trace_box, thinking_box],
-            )
+                run_button.click(
+                    fn=run_command_console,
+                    inputs=[command_input],
+                    outputs=[
+                        stdout_box,
+                        stderr_box,
+                        reward_box,
+                        feedback_box,
+                        status_box,
+                        score_breakdown_box,
+                        agent_trace_box,
+                        verdict_box,
+                        thinking_box,
+                    ],
+                )
 
-            write_file_button.click(
-                fn=write_file_console,
-                inputs=[file_path_input, file_content_box],
-                outputs=[status_box, score_breakdown_box, agent_trace_box, verdict_box, thinking_box],
-            )
+                assistant_button.click(
+                    fn=ask_assistant_console,
+                    inputs=[task_selector, file_content_box, user_message_box],
+                    outputs=[assistant_reply_box],
+                )
 
-            run_button.click(
-                fn=run_command_console,
-                inputs=[command_input],
-                outputs=[
-                    stdout_box,
-                    stderr_box,
-                    reward_box,
-                    feedback_box,
-                    status_box,
-                    score_breakdown_box,
-                    agent_trace_box,
-                    verdict_box,
-                    thinking_box,
-                ],
-            )
+                auto_fix_button.click(
+                    fn=auto_fix_console,
+                    inputs=[task_selector, file_path_input],
+                    outputs=[file_content_box, status_box, score_breakdown_box, agent_trace_box, verdict_box, thinking_box],
+                )
 
-            assistant_button.click(
-                fn=ask_assistant_console,
-                inputs=[task_selector, file_content_box, user_message_box],
-                outputs=[assistant_reply_box],
-            )
-
-            auto_fix_button.click(
-                fn=auto_fix_console,
-                inputs=[task_selector, file_path_input],
-                outputs=[file_content_box, status_box, score_breakdown_box, agent_trace_box, verdict_box, thinking_box],
-            )
-
-        with gr.Tab("Playground"):
-            gr.Markdown(
-                """
+            with gr.Tab("Playground"):
+                gr.Markdown(
+                    """
 ## 🧪 Free Playground
 
 Test your own code here:
@@ -843,49 +879,109 @@ Test your own code here:
 - switch language manually
 - run quick analysis without using the challenge flow
 """
-            )
-
-            with gr.Row():
-                playground_language = gr.Dropdown(
-                    choices=["python", "java", "cpp"],
-                    value="python",
-                    label="Language",
                 )
 
-                playground_file = gr.File(
-                    label="Upload Source File",
-                    file_types=[".py", ".java", ".cpp", ".cc", ".cxx", ".c", ".txt"],
-                    type="filepath",
+                with gr.Row():
+                    playground_language = gr.Dropdown(
+                        choices=["python", "java", "cpp"],
+                        value="python",
+                        label="Language",
+                    )
+
+                    playground_file = gr.File(
+                        label="Upload Source File",
+                        file_types=[".py", ".java", ".cpp", ".cc", ".cxx", ".c", ".txt"],
+                        type="filepath",
+                    )
+
+                    import_file_button = gr.Button("Import File", variant="secondary")
+
+                playground_code = gr.Code(
+                    label="Playground Editor",
+                    language="python",
+                    lines=24,
                 )
 
-                import_file_button = gr.Button("Import File", variant="secondary")
+                analyze_button = gr.Button("Run Analysis", variant="primary")
 
-            playground_code = gr.Code(
-                label="Playground Editor",
-                language="python",
-                lines=24,
-            )
+                with gr.Row():
+                    playground_summary = gr.Textbox(label="Summary / Import Status", lines=6)
+                    playground_stdout = gr.Textbox(label="Output", lines=8)
+                    playground_stderr = gr.Textbox(label="Errors / Warnings", lines=8)
 
-            analyze_button = gr.Button("Run Analysis", variant="primary")
+                import_file_button.click(
+                    fn=import_playground_file,
+                    inputs=[playground_file],
+                    outputs=[playground_language, playground_code, playground_summary],
+                )
 
-            with gr.Row():
-                playground_summary = gr.Textbox(label="Summary / Import Status", lines=6)
-                playground_stdout = gr.Textbox(label="Output", lines=8)
-                playground_stderr = gr.Textbox(label="Errors / Warnings", lines=8)
+                analyze_button.click(
+                    fn=run_playground,
+                    inputs=[playground_language, playground_code],
+                    outputs=[playground_summary, playground_stdout, playground_stderr],
+                )
 
-            import_file_button.click(
-                fn=import_playground_file,
-                inputs=[playground_file],
-                outputs=[playground_language, playground_code, playground_summary],
-            )
+    return demo
 
-            analyze_button.click(
-                fn=run_playground,
-                inputs=[playground_language, playground_code],
-                outputs=[playground_summary, playground_stdout, playground_stderr],
-            )
 
-demo.launch(server_name="0.0.0.0", server_port=7860)
+app = FastAPI(title="CodeFix Arena OpenEnv Server")
 
+
+@app.get("/")
+def root():
+    return {
+        "name": "codefix-arena",
+        "status": "ok",
+        "message": "CodeFix Arena server is running."
+    }
+
+
+@app.post("/reset")
+def reset_endpoint(payload: Optional[Dict[str, Any]] = Body(default=None)):
+    body = payload or {}
+    task_id = body.get("task_id")
+
+    if task_id is None:
+        state = env.reset()
+    else:
+        state = env.reset(task_id=int(task_id))
+
+    snapshot_state(state)
+
+    return {
+        "observation": to_jsonable(state),
+        "reward": 0.0,
+        "done": False,
+        "info": {
+            "message": "Environment reset successful."
+        }
+    }
+
+
+@app.post("/step")
+def step_endpoint(action: Dict[str, Any] = Body(...)):
+    state, reward, done, info = env.step(action)
+    snapshot_state(state)
+
+    return {
+        "observation": to_jsonable(state),
+        "reward": float(reward),
+        "done": bool(done),
+        "info": to_jsonable(info),
+    }
+
+
+@app.get("/state")
+def state_endpoint():
+    return snapshot_state()
+
+
+demo = create_demo()
+app = gr.mount_gradio_app(app, demo, path="/ui")
+
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", "7860"))
+    uvicorn.run(app, host="0.0.0.0", port=port)
 
 
