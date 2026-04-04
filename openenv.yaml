@@ -1,5 +1,5 @@
 name: codefix-arena
-description: A real-world coding environment for debugging, refactoring, and multi-file code repair through file operations and command execution.
+description: A real-world coding environment for debugging, refactoring, and multi-file code repair.
 version: "0.1.0"
 entrypoint: env.coding_env:CodingAssistantEnv
 
@@ -11,52 +11,7 @@ tags:
   - coding-agent
   - debugging
   - refactoring
-  - software-engineering
   - python
   - java
 
-difficulty_levels:
-  - easy
-  - medium
-  - hard
-
-languages:
-  - python
-  - java
-
-actions:
-  - list_files
-  - read_file
-  - write_file
-  - run_command
-
-observations:
-  - task_id
-  - task_type
-  - difficulty
-  - language
-  - title
-  - step
-  - max_steps
-  - workspace_dir
-  - files
-  - last_command_result
-
-tasks:
-  - id: 1
-    type: debug
-    difficulty: easy
-    language: python
-    title: Fix syntax error in Python function
-
-  - id: 2
-    type: refactor
-    difficulty: medium
-    language: python
-    title: Refactor repeated logic into helper function
-
-  - id: 3
-    type: refactor
-    difficulty: hard
-    language: java
-    title: Fix multi-file Java project logic
+license: mit
