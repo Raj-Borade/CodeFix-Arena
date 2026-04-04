@@ -2,8 +2,9 @@
 name = "codefix-arena"
 version = "0.1.0"
 description = "OpenEnv coding assistant environment"
+requires-python = ">=3.11"
 authors = [
-    { name="Raj Borade" }
+    { name = "Raj Borade" }
 ]
 dependencies = [
     "openenv-core",
@@ -16,8 +17,11 @@ dependencies = [
 ]
 
 [project.scripts]
-start = "server.app:app"
+server = "server.app:main"
 
 [build-system]
-requires = ["setuptools", "wheel"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["server*", "env*", "tasks*"]
