@@ -15,6 +15,9 @@ dependencies = [
     "python-dotenv"
 ]
 
+[project.scripts]
+start = "server.app:app"
+
 [build-system]
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
