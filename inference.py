@@ -1,18 +1,42 @@
 import json
 import os
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
 
 from env.coding_env import CodingAssistantEnv
 
 
+# Safe defaults for validator-friendly execution.
+# Token intentionally has no hardcoded default.
 API_BASE_URL = os.getenv("API_BASE_URL", "https://api-inference.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3-8b-instruct")
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY")
 
 
-def make_client() -> OpenAI:
+def log_start(label: str) -> None:
+    print(f"\n[START] {label}")
+
+
+def log_step(label: str, payload: Optional[Dict[str, Any]] = None) -> None:
+    print(f"\n[STEP] {label}")
+    if payload is not None:
+        try:
+            print(json.dumps(payload, indent=2))
+        except Exception:
+            print(str(payload))
+
+
+def log_end(label: str, payload: Optional[Dict[str, Any]] = None) -> None:
+    print(f"\n[END] {label}")
+    if payload is not None:
+        try:
+            print(json.dumps(payload, indent=2))
+        except Exception:
+            print(str(payload))
+
+
+def make_client() -> Optional[OpenAI]:
     try:
         if not HF_TOKEN:
             raise ValueError("Missing HF_TOKEN or OPENAI_API_KEY")
@@ -23,7 +47,7 @@ def make_client() -> OpenAI:
         )
 
     except Exception as e:
-        print("Client initialization failed:", str(e))
+        log_end("client_initialization", {"status": "error", "message": str(e)})
         return None
 
 
@@ -87,7 +111,7 @@ process_cart()
     return []
 
 
-def call_baseline_model(client: OpenAI, task_id: int, state: Dict) -> Dict:
+def call_baseline_model(client: OpenAI, task_id: int, state: Dict[str, Any]) -> Dict[str, Any]:
     prompt = {
         "task_id": task_id,
         "title": state.get("title"),
@@ -125,21 +149,28 @@ def call_baseline_model(client: OpenAI, task_id: int, state: Dict) -> Dict:
 
 
 def solve_task(env: CodingAssistantEnv, client: OpenAI, task_id: int) -> float:
+    log_start(f"task_{task_id}")
+
     state = env.reset(task_id=task_id)
 
-    print("\n" + "=" * 60)
-    print(f"Running Task {task_id}")
-    print("=" * 60)
-    print("Initial State:")
-    print(json.dumps(state, indent=2))
+    log_step(
+        "task_initialized",
+        {
+            "task_id": state.get("task_id"),
+            "task_type": state.get("task_type"),
+            "difficulty": state.get("difficulty"),
+            "language": state.get("language"),
+            "title": state.get("title"),
+            "files": state.get("files", []),
+            "max_steps": state.get("max_steps"),
+        },
+    )
 
     model_trace = call_baseline_model(client, task_id, state)
-    print("\n[openai_client_trace]")
-    print(json.dumps(model_trace, indent=2))
+    log_step("openai_client_trace", model_trace)
 
     state, reward, done, info = env.step({"tool": "list_files"})
-    print("\n[list_files]")
-    print(json.dumps(info, indent=2))
+    log_step("list_files", info)
 
     solutions = get_solution_for_task(task_id)
 
@@ -151,64 +182,86 @@ def solve_task(env: CodingAssistantEnv, client: OpenAI, task_id: int) -> float:
             "tool": "read_file",
             "path": file_path,
         })
-        print("\n[read_file]")
-        print(json.dumps(info, indent=2))
+        log_step(f"read_file:{file_path}", info)
 
         state, reward, done, info = env.step({
             "tool": "write_file",
             "path": file_path,
             "content": fixed_content,
         })
-        print("\n[write_file]")
-        print(json.dumps(info, indent=2))
+        log_step(f"write_file:{file_path}", info)
 
     run_command = env.current_task["run_command"]
     state, reward, done, info = env.step({
         "tool": "run_command",
         "command": run_command,
     })
-    print("\n[run_command]")
-    print(json.dumps(info, indent=2))
-    print(f"\nTask Final Score: {reward:.3f}")
+    log_step("run_command", info)
+
+    log_end(
+        f"task_{task_id}",
+        {
+            "task_id": task_id,
+            "score": round(float(reward), 3),
+            "done": done,
+        },
+    )
 
     return reward
 
 
 def run_baseline() -> None:
-    client = make_client()
+    log_start("baseline_run")
 
+    client = make_client()
     if client is None:
-        print("Client init failed — exiting safely")
+        log_end(
+            "baseline_run",
+            {
+                "status": "stopped",
+                "reason": "Client initialization failed",
+            },
+        )
         return
 
     env = CodingAssistantEnv()
     all_tasks = env.list_tasks()
 
-    scores = {}
+    scores: Dict[int, float] = {}
 
     for task in all_tasks:
+        task_id = task["id"]
         try:
-            task_id = task["id"]
             score = solve_task(env, client, task_id)
             scores[task_id] = score
         except Exception as e:
-            print(f"Task {task['id']} failed:", str(e))
-            scores[task["id"]] = 0.0
+            scores[task_id] = 0.0
+            log_end(
+                f"task_{task_id}",
+                {
+                    "task_id": task_id,
+                    "status": "error",
+                    "message": str(e),
+                    "score": 0.0,
+                },
+            )
 
-    print("\n" + "=" * 60)
-    print("FINAL BASELINE SCORES")
-    print("=" * 60)
+    summary = {
+        "scores": {str(task_id): round(score, 3) for task_id, score in scores.items()},
+        "average_score": round(sum(scores.values()) / len(scores), 3) if scores else 0.0,
+    }
 
-    for task_id, score in scores.items():
-        print(f"Task {task_id}: {score:.3f}")
-
-    if scores:
-        avg_score = sum(scores.values()) / len(scores)
-        print(f"\nAverage Score: {avg_score:.3f}")
+    log_end("baseline_run", summary)
 
 
 if __name__ == "__main__":
     try:
         run_baseline()
     except Exception as e:
-        print("Fatal Error:", str(e))
+        log_end(
+            "program",
+            {
+                "status": "fatal_error",
+                "message": str(e),
+            },
+        )
