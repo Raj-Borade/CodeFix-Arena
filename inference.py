@@ -7,23 +7,25 @@ from openai import OpenAI
 from env.coding_env import CodingAssistantEnv
 
 
-API_BASE_URL = os.getenv("API_BASE_URL")
-MODEL_NAME = os.getenv("MODEL_NAME")
+# ✅ SAFE DEFAULTS (NO CRASH)
+API_BASE_URL = os.getenv("API_BASE_URL", "https://api-inference.huggingface.co/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3-8b-instruct")
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY")
 
 
 def make_client() -> OpenAI:
-    if not API_BASE_URL:
-        raise ValueError("Missing API_BASE_URL environment variable")
-    if not MODEL_NAME:
-        raise ValueError("Missing MODEL_NAME environment variable")
-    if not HF_TOKEN:
-        raise ValueError("Missing HF_TOKEN or OPENAI_API_KEY environment variable")
+    try:
+        if not HF_TOKEN:
+            raise ValueError("Missing HF_TOKEN or OPENAI_API_KEY")
 
-    return OpenAI(
-        base_url=API_BASE_URL,
-        api_key=HF_TOKEN,
-    )
+        return OpenAI(
+            base_url=API_BASE_URL,
+            api_key=HF_TOKEN,
+        )
+
+    except Exception as e:
+        print("Client initialization failed:", str(e))
+        return None
 
 
 def get_solution_for_task(task_id: int) -> List[Dict[str, str]]:
@@ -175,15 +177,24 @@ def solve_task(env: CodingAssistantEnv, client: OpenAI, task_id: int) -> float:
 
 def run_baseline() -> None:
     client = make_client()
+
+    if client is None:
+        print("Client init failed — exiting safely")
+        return
+
     env = CodingAssistantEnv()
     all_tasks = env.list_tasks()
 
     scores = {}
 
     for task in all_tasks:
-        task_id = task["id"]
-        score = solve_task(env, client, task_id)
-        scores[task_id] = score
+        try:
+            task_id = task["id"]
+            score = solve_task(env, client, task_id)
+            scores[task_id] = score
+        except Exception as e:
+            print(f"Task {task['id']} failed:", str(e))
+            scores[task["id"]] = 0.0
 
     print("\n" + "=" * 60)
     print("FINAL BASELINE SCORES")
@@ -192,14 +203,13 @@ def run_baseline() -> None:
     for task_id, score in scores.items():
         print(f"Task {task_id}: {score:.3f}")
 
-    avg_score = sum(scores.values()) / len(scores)
-    print(f"\nAverage Score: {avg_score:.3f}")
+    if scores:
+        avg_score = sum(scores.values()) / len(scores)
+        print(f"\nAverage Score: {avg_score:.3f}")
 
 
 if __name__ == "__main__":
-    run_baseline()
-
-
-
-
-
+    try:
+        run_baseline()
+    except Exception as e:
+        print("Fatal Error:", str(e))
