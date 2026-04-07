@@ -12,6 +12,10 @@ MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3-8b-instruct")
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY")
 
 
+def clamp_score(score: float) -> float:
+    return max(0.001, min(0.999, float(score)))
+
+
 def log_start(label: str) -> None:
     print(f"\n[START] {label}")
 
@@ -196,16 +200,18 @@ def solve_task(env: CodingAssistantEnv, client: OpenAI, task_id: int) -> float:
     })
     log_step("run_command", info)
 
+    safe_reward = clamp_score(reward)
+
     log_end(
         f"task_{task_id}",
         {
             "task_id": task_id,
-            "score": round(float(reward), 3),
+            "score": round(safe_reward, 3),
             "done": done,
         },
     )
 
-    return reward
+    return safe_reward
 
 
 def run_baseline() -> None:
@@ -231,22 +237,22 @@ def run_baseline() -> None:
         task_id = task["id"]
         try:
             score = solve_task(env, client, task_id)
-            scores[task_id] = score
+            scores[task_id] = clamp_score(score)
         except Exception as e:
-            scores[task_id] = 0.0
+            scores[task_id] = 0.001
             log_end(
                 f"task_{task_id}",
                 {
                     "task_id": task_id,
                     "status": "error",
                     "message": str(e),
-                    "score": 0.0,
+                    "score": 0.001,
                 },
             )
 
     summary = {
         "scores": {str(task_id): round(score, 3) for task_id, score in scores.items()},
-        "average_score": round(sum(scores.values()) / len(scores), 3) if scores else 0.0,
+        "average_score": round(clamp_score(sum(scores.values()) / len(scores)), 3) if scores else 0.001,
     }
 
     log_end("baseline_run", summary)
