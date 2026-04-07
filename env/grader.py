@@ -1,7 +1,24 @@
 class CodingTaskGrader:
     @staticmethod
     def clamp(score: float) -> float:
-        return max(0.001, min(0.999, round(score, 3)))
+        try:
+            score = float(score)
+        except Exception:
+            return 0.001
+
+        if score >= 1.0:
+            return 0.999
+        if score <= 0.0:
+            return 0.001
+
+        safe_score = round(score, 3)
+
+        if safe_score >= 1.0:
+            return 0.999
+        if safe_score <= 0.0:
+            return 0.001
+
+        return float(safe_score)
 
     @staticmethod
     def grade(task, workspace, last_command_result):
@@ -24,7 +41,7 @@ class CodingTaskGrader:
 
         stdout = (last_command_result.get("stdout") or "").strip()
         stderr = (last_command_result.get("stderr") or "").strip()
-        status = last_command_result.get("status", "error")
+        status = str(last_command_result.get("status", "error")).strip().lower()
 
         # =============================
         # EXECUTION
@@ -50,14 +67,15 @@ class CodingTaskGrader:
                 r, details, msgs = CodingTaskGrader._grade_java_multifile(workspace, stdout)
 
             else:
-                r, details, msgs = 0.0, {}, ["Unknown task"]
+                r, details, msgs = 0.0, {}, ["Unknown task."]
 
-            reward += r
+            reward += float(r)
             score_breakdown.update(details)
             feedback_parts.extend(msgs)
 
         except Exception as e:
             feedback_parts.append(f"Grader error: {e}")
+            score_breakdown["grader_error"] = str(e)
 
         # =============================
         # PENALTIES
@@ -66,23 +84,25 @@ class CodingTaskGrader:
 
         if "infinite" in stderr.lower():
             penalties -= 0.1
+            feedback_parts.append("Penalty: possible infinite loop detected.")
 
         if len(stdout) > 500:
             penalties -= 0.05
+            feedback_parts.append("Penalty: excessive output.")
 
         reward += penalties
         score_breakdown["penalties"] = penalties
 
         # =============================
-        # FINAL FIX (IMPORTANT 🔥)
+        # FINAL NORMALIZATION
         # =============================
-        reward = CodingTaskGrader.clamp(reward)
+        reward = CodingTaskGrader.clamp(float(reward))
 
         if reward >= 0.85:
             score_breakdown["overall"] = "excellent"
         elif reward >= 0.65:
             score_breakdown["overall"] = "good"
-        elif reward > 0:
+        elif reward > 0.0:
             score_breakdown["overall"] = "partial"
         else:
             score_breakdown["overall"] = "failed"
@@ -109,7 +129,7 @@ class CodingTaskGrader:
             details["structure"] = 0.15
             messages.append("Function syntax corrected.")
 
-        if "return a + b" in content:
+        if "return a + b" in content or "return a+b" in content:
             reward += 0.15
             details["correctness"] = 0.15
             messages.append("Correct logic detected.")
@@ -126,6 +146,7 @@ class CodingTaskGrader:
         if stdout == "5":
             reward += 0.15
             details["execution_output"] = 0.15
+            messages.append("Expected output correct.")
 
         return reward, details, messages
 
@@ -143,29 +164,35 @@ class CodingTaskGrader:
         if "def calculate_total" in content:
             reward += 0.15
             details["structure"] = 0.15
+            messages.append("Helper function created.")
 
-        if content.count("calculate_total(") >= 3:
+        helper_calls = content.count("calculate_total(")
+        if helper_calls >= 3:
             reward += 0.15
             details["efficiency"] = 0.15
+            messages.append("Logic reused properly.")
 
-        if content.count("total += 100") <= 1:
+        repeated = content.count("total += 100") + content.count("total += 50")
+        if repeated <= 2:
             reward += 0.1
             details["duplication_reduction"] = 0.1
+            messages.append("Duplicate logic reduced.")
 
         hidden = workspace.run_command("python app.py")
-
-        if hidden.get("status") == "success":
+        if hidden.get("status") == "success" and hidden.get("stdout", "").count("150") >= 2:
             reward += 0.2
             details["correctness"] = 0.2
+            messages.append("Behavior correct.")
 
         if stdout.count("150") >= 2:
             reward += 0.15
             details["execution_output"] = 0.15
+            messages.append("Output verified.")
 
         return reward, details, messages
 
     # =============================
-    # JAVA TASK (FIXED 🔥)
+    # JAVA TASK
     # =============================
     @staticmethod
     def _grade_java_multifile(workspace, stdout):
@@ -179,24 +206,30 @@ class CodingTaskGrader:
         if "return a + b;" in service:
             reward += 0.15
             details["correctness"] = 0.15
+            messages.append("Logic fixed.")
 
         if "public static String format(" in formatter:
             reward += 0.15
             details["structure"] = 0.15
+            messages.append("Method fixed.")
 
         if "\"Result = \" + result" in formatter:
             reward += 0.1
             details["output_format"] = 0.1
+            messages.append("Formatting correct.")
 
-        # 🔥 Cross-platform command
-        hidden = workspace.run_command("javac Main.java CalculatorService.java ResultFormatter.java && java Main")
+        hidden = workspace.run_command(
+            "javac Main.java CalculatorService.java ResultFormatter.java && java Main"
+        )
 
-        if hidden.get("status") == "success":
+        if hidden.get("status") == "success" and "Result = 15" in hidden.get("stdout", ""):
             reward += 0.2
             details["robustness"] = 0.2
+            messages.append("Hidden validation passed.")
 
         if "Result = 15" in stdout:
             reward += 0.15
             details["execution_output"] = 0.15
+            messages.append("Final output correct.")
 
         return reward, details, messages
