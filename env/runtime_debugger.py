@@ -236,3 +236,4 @@ class RuntimeDebugger:
                 return "A function was declared but not linked or defined properly."
 
         return "The compiler/runtime returned an error. Review stderr for exact details."
+
