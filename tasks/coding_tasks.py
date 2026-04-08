@@ -1,33 +1,36 @@
 import os
+import sys
 from typing import Any, Dict, List
 
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 
-def _is_windows() -> bool:
-    return os.name == "nt"
-
-
 def _python_cmd(script_name: str) -> str:
-    return f"py {script_name}" if _is_windows() else f"python3 {script_name}"
+    """
+    Always use the same Python interpreter that is running the environment.
+    This avoids issues with `py`, `python3`, etc.
+    """
+    python_exe = sys.executable or "python"
+    return f"\"{python_exe}\" {script_name}"
 
 
 def _java_run_command() -> str:
     """
-    Platform-aware Java compile+run command.
+    Platform-safe Java compile + run command.
 
     Priority:
-    1. JAVA_COMPILE_RUN_CMD env var if explicitly provided
-    2. JAVA_HOME/bin javac/java
-    3. PATH-based javac/java
+    1. JAVA_COMPILE_RUN_CMD (if user sets manually)
+    2. JAVA_HOME/bin
+    3. PATH (javac/java)
     """
     explicit_cmd = os.getenv("JAVA_COMPILE_RUN_CMD")
     if explicit_cmd:
         return explicit_cmd
 
     java_home = os.getenv("JAVA_HOME", "").strip()
+
     if java_home:
-        if _is_windows():
+        if os.name == "nt":
             javac = os.path.join(java_home, "bin", "javac.exe")
             java = os.path.join(java_home, "bin", "java.exe")
         else:
@@ -35,10 +38,11 @@ def _java_run_command() -> str:
             java = os.path.join(java_home, "bin", "java")
 
         return (
-            f'"{javac}" Main.java CalculatorService.java ResultFormatter.java'
-            f' && "{java}" Main'
+            f"\"{javac}\" Main.java CalculatorService.java ResultFormatter.java"
+            f" && \"{java}\" Main"
         )
 
+    # fallback
     return "javac Main.java CalculatorService.java ResultFormatter.java && java Main"
 
 
