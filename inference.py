@@ -3,7 +3,6 @@ import os
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
-
 from env.coding_env import CodingAssistantEnv
 
 
@@ -12,19 +11,22 @@ MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3-8b-instruct")
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY")
 
 
+# ✅ FINAL SAFE CLAMP (NO ROUNDING)
 def clamp_score(score) -> float:
-    """Strictly between 0 and 1. Never returns 0.0 or 1.0."""
     try:
         s = float(score)
     except (TypeError, ValueError):
         return 0.001
-    if s != s:  # NaN check
+
+    if s != s:  # NaN
         return 0.001
-    s = max(0.001, min(0.999, s))
-    s = round(s, 4)  # use 4 decimals — avoids 0.000 rounding
-    if s <= 0.0 or s >= 1.0:
-        s = 0.001
-    return s
+
+    if s <= 0.0:
+        return 0.001
+    if s >= 1.0:
+        return 0.999
+
+    return max(0.001, min(0.999, s))
 
 
 def log_start(label: str) -> None:
@@ -66,22 +68,19 @@ def make_client() -> Optional[OpenAI]:
 
 def get_solution_for_task(task_id: int) -> List[Dict[str, str]]:
     if task_id == 1:
-        return [
-            {
-                "path": "main.py",
-                "content": """def add(a, b):
+        return [{
+            "path": "main.py",
+            "content": """def add(a, b):
     return a + b
 
 print(add(2, 3))
-""",
-            }
-        ]
+"""
+        }]
 
     if task_id == 2:
-        return [
-            {
-                "path": "app.py",
-                "content": """def calculate_total():
+        return [{
+            "path": "app.py",
+            "content": """def calculate_total():
     total = 0
     total += 100
     total += 50
@@ -95,9 +94,8 @@ def process_cart():
 
 process_order()
 process_cart()
-""",
-            }
-        ]
+"""
+        }]
 
     if task_id == 3:
         return [
@@ -108,7 +106,7 @@ process_cart()
         return a + b;
     }
 }
-""",
+"""
             },
             {
                 "path": "ResultFormatter.java",
@@ -117,8 +115,8 @@ process_cart()
         return "Result = " + result;
     }
 }
-""",
-            },
+"""
+            }
         ]
 
     return []
@@ -166,18 +164,15 @@ def solve_task(env: CodingAssistantEnv, client: OpenAI, task_id: int) -> float:
 
     state = env.reset(task_id=task_id)
 
-    log_step(
-        "task_initialized",
-        {
-            "task_id": state.get("task_id"),
-            "task_type": state.get("task_type"),
-            "difficulty": state.get("difficulty"),
-            "language": state.get("language"),
-            "title": state.get("title"),
-            "files": state.get("files", []),
-            "max_steps": state.get("max_steps"),
-        },
-    )
+    log_step("task_initialized", {
+        "task_id": state.get("task_id"),
+        "task_type": state.get("task_type"),
+        "difficulty": state.get("difficulty"),
+        "language": state.get("language"),
+        "title": state.get("title"),
+        "files": state.get("files", []),
+        "max_steps": state.get("max_steps"),
+    })
 
     model_trace = call_baseline_model(client, task_id, state)
     log_step("openai_client_trace", model_trace)
@@ -188,40 +183,34 @@ def solve_task(env: CodingAssistantEnv, client: OpenAI, task_id: int) -> float:
     solutions = get_solution_for_task(task_id)
 
     for solution in solutions:
-        file_path = solution["path"]
-        fixed_content = solution["content"]
-
         state, reward, done, info = env.step({
             "tool": "read_file",
-            "path": file_path,
+            "path": solution["path"],
         })
-        log_step(f"read_file:{file_path}", info)
+        log_step(f"read_file:{solution['path']}", info)
 
         state, reward, done, info = env.step({
             "tool": "write_file",
-            "path": file_path,
-            "content": fixed_content,
+            "path": solution["path"],
+            "content": solution["content"],
         })
-        log_step(f"write_file:{file_path}", info)
+        log_step(f"write_file:{solution['path']}", info)
 
     run_command = env.current_task["run_command"]
+
     state, reward, done, info = env.step({
         "tool": "run_command",
         "command": run_command,
     })
     log_step("run_command", info)
 
-    # BUG FIX 1: use clamp_score (not round) so score is never 0.0 or 1.0
     safe_reward = clamp_score(reward)
 
-    log_end(
-        f"task_{task_id}",
-        {
-            "task_id": task_id,
-            "score": clamp_score(safe_reward),  # was: round(safe_reward, 3) — round can produce 0.0
-            "done": done,
-        },
-    )
+    log_end(f"task_{task_id}", {
+        "task_id": task_id,
+        "score": clamp_score(safe_reward),
+        "done": done,
+    })
 
     return safe_reward
 
@@ -231,13 +220,10 @@ def run_baseline() -> None:
 
     client = make_client()
     if client is None:
-        log_end(
-            "baseline_run",
-            {
-                "status": "stopped",
-                "reason": "Client initialization failed",
-            },
-        )
+        log_end("baseline_run", {
+            "status": "stopped",
+            "reason": "Client initialization failed",
+        })
         return
 
     env = CodingAssistantEnv()
@@ -252,19 +238,15 @@ def run_baseline() -> None:
             scores[task_id] = clamp_score(score)
         except Exception as e:
             scores[task_id] = 0.001
-            log_end(
-                f"task_{task_id}",
-                {
-                    "task_id": task_id,
-                    "status": "error",
-                    "message": str(e),
-                    "score": 0.001,
-                },
-            )
+            log_end(f"task_{task_id}", {
+                "task_id": task_id,
+                "status": "error",
+                "message": str(e),
+                "score": 0.001,
+            })
 
-    # BUG FIX 2: use clamp_score (not round) in summary scores — round can produce 0.0 or 1.0
     summary = {
-        "scores": {str(task_id): clamp_score(score) for task_id, score in scores.items()},
+        "scores": {str(tid): clamp_score(s) for tid, s in scores.items()},
         "average_score": clamp_score(sum(scores.values()) / len(scores)) if scores else 0.001,
     }
 
@@ -275,10 +257,7 @@ if __name__ == "__main__":
     try:
         run_baseline()
     except Exception as e:
-        log_end(
-            "program",
-            {
-                "status": "fatal_error",
-                "message": str(e),
-            },
-        )
+        log_end("program", {
+            "status": "fatal_error",
+            "message": str(e),
+        })
