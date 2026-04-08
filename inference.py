@@ -6,7 +6,7 @@ from openai import OpenAI
 from env.coding_env import CodingAssistantEnv
 
 
-API_BASE_URL = os.getenv("API_BASE_URL", "https://api-inference.huggingface.co/v1")
+API_BASE_URL = "https://router.huggingface.co/v1"
 MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3-8b-instruct")
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY")
 
