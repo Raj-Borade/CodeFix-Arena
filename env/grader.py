@@ -1,3 +1,8 @@
+import os
+import shutil
+import sys
+
+
 class CodingTaskGrader:
     @staticmethod
     def clamp(score: float) -> float:
@@ -43,9 +48,8 @@ class CodingTaskGrader:
         stderr = (last_command_result.get("stderr") or "").strip()
         status = str(last_command_result.get("status", "error")).strip().lower()
 
-        # =============================
-        # EXECUTION
-        # =============================
+        python_exe = sys.executable or "python"
+
         if status == "success":
             reward += 0.3
             score_breakdown["execution"] = 0.3
@@ -53,21 +57,21 @@ class CodingTaskGrader:
         else:
             feedback_parts.append("Execution failed.")
 
-        # =============================
-        # TASK LOGIC
-        # =============================
         try:
             if task_type == "debug":
-                r, details, msgs = CodingTaskGrader._grade_python_debug(workspace, stdout)
-
+                r, details, msgs = CodingTaskGrader._grade_python_debug(
+                    workspace, stdout, python_exe
+                )
             elif task_type == "refactor" and expected_fix == "refactor_repeated_logic":
-                r, details, msgs = CodingTaskGrader._grade_python_refactor(workspace, stdout)
-
+                r, details, msgs = CodingTaskGrader._grade_python_refactor(
+                    workspace, stdout, python_exe
+                )
             elif task_type == "refactor" and expected_fix == "java_multifile_refactor_fix":
-                r, details, msgs = CodingTaskGrader._grade_java_multifile(workspace, stdout)
-
+                r, details, msgs = CodingTaskGrader._grade_java_multifile(
+                    workspace, stdout
+                )
             else:
-                r, details, msgs = 0.0, {}, ["Unknown task."]
+                r, details, msgs = 0.05, {}, ["Fallback grading applied."]
 
             reward += float(r)
             score_breakdown.update(details)
@@ -77,9 +81,6 @@ class CodingTaskGrader:
             feedback_parts.append(f"Grader error: {e}")
             score_breakdown["grader_error"] = str(e)
 
-        # =============================
-        # PENALTIES
-        # =============================
         penalties = 0.0
 
         if "infinite" in stderr.lower():
@@ -93,9 +94,6 @@ class CodingTaskGrader:
         reward += penalties
         score_breakdown["penalties"] = penalties
 
-        # =============================
-        # FINAL NORMALIZATION
-        # =============================
         reward = CodingTaskGrader.clamp(float(reward))
 
         if reward >= 0.85:
@@ -113,11 +111,8 @@ class CodingTaskGrader:
             "score_breakdown": score_breakdown,
         }
 
-    # =============================
-    # PYTHON DEBUG
-    # =============================
     @staticmethod
-    def _grade_python_debug(workspace, stdout):
+    def _grade_python_debug(workspace, stdout, python_exe):
         reward = 0.0
         details = {}
         messages = []
@@ -125,36 +120,42 @@ class CodingTaskGrader:
         content = workspace.read_file("main.py")
 
         if "def add(" in content:
-            reward += 0.15
-            details["structure"] = 0.15
+            reward += 0.12
+            details["structure"] = 0.12
             messages.append("Function syntax corrected.")
 
         if "return a + b" in content or "return a+b" in content:
-            reward += 0.15
-            details["correctness"] = 0.15
+            reward += 0.18
+            details["correctness"] = 0.18
             messages.append("Correct logic detected.")
 
         hidden = workspace.run_command(
-            "python -c \"from main import add; print(add(10, 5))\""
+            f"\"{python_exe}\" -c \"from main import add; print(add(10, 5))\""
         )
 
-        if hidden.get("status") == "success" and "15" in hidden.get("stdout", ""):
-            reward += 0.25
-            details["robustness"] = 0.25
-            messages.append("Hidden test passed.")
+        if hidden.get("status") == "success":
+            reward += 0.10
+            details["execution_hidden"] = 0.10
 
-        if stdout == "5":
-            reward += 0.15
-            details["execution_output"] = 0.15
-            messages.append("Expected output correct.")
+            if "15" in hidden.get("stdout", ""):
+                reward += 0.15
+                details["robustness"] = 0.15
+                messages.append("Hidden test passed.")
+
+        if stdout:
+            reward += 0.05
+
+            if stdout == "5":
+                reward += 0.15
+                details["execution_output"] = 0.15
+                messages.append("Expected output correct.")
+            else:
+                reward += 0.05
 
         return reward, details, messages
 
-    # =============================
-    # PYTHON REFACTOR
-    # =============================
     @staticmethod
-    def _grade_python_refactor(workspace, stdout):
+    def _grade_python_refactor(workspace, stdout, python_exe):
         reward = 0.0
         details = {}
         messages = []
@@ -162,38 +163,46 @@ class CodingTaskGrader:
         content = workspace.read_file("app.py")
 
         if "def calculate_total" in content:
-            reward += 0.15
-            details["structure"] = 0.15
+            reward += 0.12
+            details["structure"] = 0.12
             messages.append("Helper function created.")
 
         helper_calls = content.count("calculate_total(")
         if helper_calls >= 3:
-            reward += 0.15
-            details["efficiency"] = 0.15
+            reward += 0.18
+            details["efficiency"] = 0.18
             messages.append("Logic reused properly.")
+        elif helper_calls >= 1:
+            reward += 0.08
 
         repeated = content.count("total += 100") + content.count("total += 50")
         if repeated <= 2:
-            reward += 0.1
-            details["duplication_reduction"] = 0.1
+            reward += 0.12
+            details["duplication_reduction"] = 0.12
             messages.append("Duplicate logic reduced.")
 
-        hidden = workspace.run_command("python app.py")
-        if hidden.get("status") == "success" and hidden.get("stdout", "").count("150") >= 2:
-            reward += 0.2
-            details["correctness"] = 0.2
-            messages.append("Behavior correct.")
+        hidden = workspace.run_command(f"\"{python_exe}\" app.py")
 
-        if stdout.count("150") >= 2:
-            reward += 0.15
-            details["execution_output"] = 0.15
-            messages.append("Output verified.")
+        if hidden.get("status") == "success":
+            reward += 0.10
+
+            if hidden.get("stdout", "").count("150") >= 2:
+                reward += 0.15
+                details["correctness"] = 0.15
+                messages.append("Behavior correct.")
+
+        if stdout:
+            reward += 0.05
+
+            if stdout.count("150") >= 2:
+                reward += 0.15
+                details["execution_output"] = 0.15
+                messages.append("Output verified.")
+            else:
+                reward += 0.05
 
         return reward, details, messages
 
-    # =============================
-    # JAVA TASK
-    # =============================
     @staticmethod
     def _grade_java_multifile(workspace, stdout):
         reward = 0.0
@@ -214,18 +223,39 @@ class CodingTaskGrader:
             messages.append("Method fixed.")
 
         if "\"Result = \" + result" in formatter:
-            reward += 0.1
-            details["output_format"] = 0.1
+            reward += 0.10
+            details["output_format"] = 0.10
             messages.append("Formatting correct.")
 
-        hidden = workspace.run_command(
-            "javac Main.java CalculatorService.java ResultFormatter.java && java Main"
-        )
+        java_home = os.environ.get("JAVA_HOME", "").strip()
+        javac = shutil.which("javac")
+        java = shutil.which("java")
 
-        if hidden.get("status") == "success" and "Result = 15" in hidden.get("stdout", ""):
-            reward += 0.2
-            details["robustness"] = 0.2
-            messages.append("Hidden validation passed.")
+        if not javac and java_home:
+            candidate = os.path.join(
+                java_home, "bin", "javac.exe" if os.name == "nt" else "javac"
+            )
+            if os.path.exists(candidate):
+                javac = candidate
+
+        if not java and java_home:
+            candidate = os.path.join(
+                java_home, "bin", "java.exe" if os.name == "nt" else "java"
+            )
+            if os.path.exists(candidate):
+                java = candidate
+
+        if javac and java:
+            hidden = workspace.run_command(
+                f"\"{javac}\" Main.java CalculatorService.java ResultFormatter.java && \"{java}\" Main"
+            )
+
+            if hidden.get("status") == "success" and "Result = 15" in hidden.get("stdout", ""):
+                reward += 0.20
+                details["robustness"] = 0.20
+                messages.append("Hidden validation passed.")
+        else:
+            messages.append("Java tools not available for hidden validation.")
 
         if "Result = 15" in stdout:
             reward += 0.15
