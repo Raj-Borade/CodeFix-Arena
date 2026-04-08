@@ -3,30 +3,28 @@ import os
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
+
 from env.coding_env import CodingAssistantEnv
 
 
-API_BASE_URL = "https://router.huggingface.co/v1"
-MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3-8b-instruct")
-HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY")
+MODEL_NAME = os.environ.get("MODEL_NAME", "meta-llama/Meta-Llama-3-8B-Instruct")
+EPS = 0.001
+MAX_SCORE = 0.999
 
 
-# ✅ FINAL SAFE CLAMP (NO ROUNDING)
-def clamp_score(score) -> float:
+def clamp_score(score: Any) -> float:
     try:
         s = float(score)
     except (TypeError, ValueError):
-        return 0.001
+        return EPS
 
     if s != s:  # NaN
-        return 0.001
-
+        return EPS
     if s <= 0.0:
-        return 0.001
+        return EPS
     if s >= 1.0:
-        return 0.999
-
-    return max(0.001, min(0.999, s))
+        return MAX_SCORE
+    return max(EPS, min(MAX_SCORE, s))
 
 
 def log_start(label: str) -> None:
@@ -53,16 +51,34 @@ def log_end(label: str, payload: Optional[Dict[str, Any]] = None) -> None:
 
 def make_client() -> Optional[OpenAI]:
     try:
-        if not HF_TOKEN:
-            raise ValueError("Missing HF_TOKEN or OPENAI_API_KEY")
+        api_base_url = os.environ["API_BASE_URL"]
+        api_key = os.environ["API_KEY"]
 
-        return OpenAI(
-            base_url=API_BASE_URL,
-            api_key=HF_TOKEN,
+        client = OpenAI(
+            base_url=api_base_url,
+            api_key=api_key,
         )
 
+        log_step("client_initialization", {
+            "status": "success",
+            "base_url_present": bool(api_base_url),
+            "api_key_present": bool(api_key),
+            "model_name": MODEL_NAME,
+        })
+        return client
+
+    except KeyError as e:
+        missing_name = str(e).strip("'")
+        log_end("client_initialization", {
+            "status": "error",
+            "message": f"Missing required injected environment variable: {missing_name}",
+        })
+        return None
     except Exception as e:
-        log_end("client_initialization", {"status": "error", "message": str(e)})
+        log_end("client_initialization", {
+            "status": "error",
+            "message": str(e),
+        })
         return None
 
 
@@ -72,6 +88,7 @@ def get_solution_for_task(task_id: int) -> List[Dict[str, str]]:
             "path": "main.py",
             "content": """def add(a, b):
     return a + b
+
 
 print(add(2, 3))
 """
@@ -86,11 +103,14 @@ print(add(2, 3))
     total += 50
     return total
 
+
 def process_order():
     print(calculate_total())
 
+
 def process_cart():
     print(calculate_total())
+
 
 process_order()
 process_cart()
@@ -116,7 +136,7 @@ process_cart()
     }
 }
 """
-            }
+            },
         ]
 
     return []
@@ -145,7 +165,10 @@ def call_baseline_model(client: OpenAI, task_id: int, state: Dict[str, Any]) -> 
         content = response.choices[0].message.content or "{}"
 
         try:
-            return json.loads(content)
+            parsed = json.loads(content)
+            if isinstance(parsed, dict):
+                return parsed
+            return {"raw_response": content.strip()}
         except Exception:
             return {"raw_response": content.strip()}
 
@@ -156,6 +179,7 @@ def call_baseline_model(client: OpenAI, task_id: int, state: Dict[str, Any]) -> 
             "error": str(e),
             "task_id": task_id,
             "title": state.get("title"),
+            "model_name": MODEL_NAME,
         }
 
 
@@ -208,7 +232,7 @@ def solve_task(env: CodingAssistantEnv, client: OpenAI, task_id: int) -> float:
 
     log_end(f"task_{task_id}", {
         "task_id": task_id,
-        "score": clamp_score(safe_reward),
+        "score": safe_reward,
         "done": done,
     })
 
@@ -237,17 +261,21 @@ def run_baseline() -> None:
             score = solve_task(env, client, task_id)
             scores[task_id] = clamp_score(score)
         except Exception as e:
-            scores[task_id] = 0.001
+            scores[task_id] = EPS
             log_end(f"task_{task_id}", {
                 "task_id": task_id,
                 "status": "error",
                 "message": str(e),
-                "score": 0.001,
+                "score": EPS,
             })
 
+    average_score = EPS
+    if scores:
+        average_score = clamp_score(sum(scores.values()) / len(scores))
+
     summary = {
-        "scores": {str(tid): clamp_score(s) for tid, s in scores.items()},
-        "average_score": clamp_score(sum(scores.values()) / len(scores)) if scores else 0.001,
+        "scores": {str(tid): clamp_score(score) for tid, score in scores.items()},
+        "average_score": average_score,
     }
 
     log_end("baseline_run", summary)
