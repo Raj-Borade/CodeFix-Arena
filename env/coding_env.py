@@ -7,6 +7,9 @@ from env.models import ActionModel, ObservationModel
 
 
 class CodingAssistantEnv:
+    MIN_REWARD = 0.001
+    MAX_REWARD = 0.999
+
     def __init__(self):
         self.state_data: Dict[str, Any] = {}
         self.current_task: Optional[Dict[str, Any]] = None
@@ -22,6 +25,35 @@ class CodingAssistantEnv:
             "stdout": "",
             "stderr": "",
         }
+
+    def _safe_reward(self, reward: Any) -> float:
+        try:
+            reward = float(reward)
+        except Exception:
+            return self.MIN_REWARD
+
+        if reward <= 0.0:
+            return self.MIN_REWARD
+        if reward >= 1.0:
+            return self.MAX_REWARD
+
+        reward = round(reward, 3)
+
+        if reward <= 0.0:
+            return self.MIN_REWARD
+        if reward >= 1.0:
+            return self.MAX_REWARD
+
+        return reward
+
+    def _base_reward_for_tool(self, tool_name: str) -> float:
+        tool_rewards = {
+            "list_files": 0.02,
+            "read_file": 0.03,
+            "write_file": 0.05,
+            "run_command": 0.06,
+        }
+        return self._safe_reward(tool_rewards.get(tool_name, self.MIN_REWARD))
 
     def reset(self, task_id: Optional[int] = None) -> Dict[str, Any]:
         self.done = False
@@ -51,23 +83,31 @@ class CodingAssistantEnv:
 
     def step(self, action: Dict[str, Any]) -> Tuple[Dict[str, Any], float, bool, Dict[str, Any]]:
         if self.done:
-            return self.state(), 0.0, True, {
+            reward = self._safe_reward(self.MIN_REWARD)
+            return self.state(), reward, True, {
                 "message": "Episode already finished",
                 "tool_result": {},
                 "feedback": "No further actions allowed after episode completion.",
                 "expected_fix": self.current_task.get("expected_fix") if self.current_task else "",
-                "score_breakdown": {},
+                "score_breakdown": {
+                    "reward": reward,
+                    "reason": "episode_already_finished",
+                },
             }
 
         try:
             validated = ActionModel(**action)
         except Exception as e:
-            return self.state(), 0.0, self.done, {
+            reward = self._safe_reward(self.MIN_REWARD)
+            return self.state(), reward, self.done, {
                 "message": f"Invalid action: {e}",
                 "tool_result": {},
                 "feedback": "Action validation failed.",
                 "expected_fix": self.current_task.get("expected_fix") if self.current_task else "",
-                "score_breakdown": {},
+                "score_breakdown": {
+                    "reward": reward,
+                    "reason": "action_validation_failed",
+                },
             }
 
         tool_result, tool_error = self._safe_apply_action(validated)
@@ -76,27 +116,42 @@ class CodingAssistantEnv:
         self.state_data["files"] = self.workspace.list_files()
         self.state_data["last_command_result"] = self.last_command_result
 
-        reward = 0.0
+        reward = self._base_reward_for_tool(validated.tool)
         feedback = "Action applied."
-        score_breakdown: Dict[str, Any] = {}
+        score_breakdown: Dict[str, Any] = {
+            "base_reward": reward,
+            "tool": validated.tool,
+        }
 
         if tool_error:
+            reward = self._safe_reward(self.MIN_REWARD)
             feedback = f"Tool execution failed: {tool_error}"
+            score_breakdown.update({
+                "reward": reward,
+                "tool_error": str(tool_error),
+            })
+
         elif validated.tool == "run_command":
             graded = CodingTaskGrader.grade(
                 self.current_task,
                 self.workspace,
                 self.last_command_result,
             )
-            reward = float(graded.get("reward", 0.0))
+            reward = self._safe_reward(graded.get("reward", reward))
             feedback = graded.get("feedback", "Command executed.")
-            score_breakdown = graded.get("score_breakdown", {})
+            score_breakdown = graded.get("score_breakdown", {}) or {}
+            score_breakdown["reward"] = reward
 
             if reward >= 0.9:
                 self.done = True
 
+        else:
+            score_breakdown["reward"] = reward
+
         if self.state_data["step"] >= self.max_steps:
             self.done = True
+
+        reward = self._safe_reward(reward)
 
         info = {
             "tool_result": tool_result,
@@ -171,5 +226,3 @@ class CodingAssistantEnv:
             return result
 
         raise ValueError(f"Unknown tool: {action.tool}")
-
-
