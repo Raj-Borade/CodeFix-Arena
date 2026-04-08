@@ -19,17 +19,17 @@ def safe_reward(value: Any) -> float:
     try:
         value = float(value)
     except Exception:
-        return 0.001
+        return 0.01
 
     if value != value:
-        return 0.001
+        return 0.01
 
     if value >= 1.0:
-        return 0.999
+        return 0.95
     if value <= 0.0:
-        return 0.001
+        return 0.01
 
-    return max(0.001, min(0.999, value))
+    return max(0.01, min(0.95, value))
 
 
 class ResetRequest(BaseModel):
@@ -231,7 +231,7 @@ def load_task_console(task_id):
 
         status = format_status(
             "Task loaded successfully.",
-            reward=f"{safe_reward(0.001):.3f}",
+            reward=f"{safe_reward(0.01):.3f}",
             done=False,
             extra="Workspace initialized and ready for agent interaction."
         )
@@ -261,7 +261,7 @@ def load_task_console(task_id):
             status,
             "",
             "",
-            f"{safe_reward(0.001):.3f}",
+            f"{safe_reward(0.01):.3f}",
             "",
             score_breakdown,
             build_agent_trace(AGENT_TRACE),
@@ -279,10 +279,10 @@ def load_task_console(task_id):
             "",
             "",
             "",
-            format_status("Task loading failed.", reward=f"{safe_reward(0.001):.3f}", done=False, extra=str(e)),
+            format_status("Task loading failed.", reward=f"{safe_reward(0.01):.3f}", done=False, extra=str(e)),
             "",
             "",
-            f"{safe_reward(0.001):.3f}",
+            f"{safe_reward(0.01):.3f}",
             str(e),
             {"error": str(e)},
             build_agent_trace(AGENT_TRACE),
@@ -311,7 +311,7 @@ def list_files_console():
         thinking = build_agent_thinking(AGENT_TRACE)
         return (
             "",
-            format_status("Failed to list files.", reward=f"{safe_reward(0.001):.3f}", done=False, extra=str(e)),
+            format_status("Failed to list files.", reward=f"{safe_reward(0.01):.3f}", done=False, extra=str(e)),
             build_agent_trace(AGENT_TRACE),
             thinking,
         )
@@ -350,7 +350,7 @@ def read_file_console(path):
         thinking = build_agent_thinking(AGENT_TRACE)
         return (
             "",
-            format_status("File read failed.", reward=f"{safe_reward(0.001):.3f}", done=False, extra=str(e)),
+            format_status("File read failed.", reward=f"{safe_reward(0.01):.3f}", done=False, extra=str(e)),
             build_agent_trace(AGENT_TRACE),
             thinking,
         )
@@ -407,7 +407,7 @@ def write_file_console(path, content):
         AGENT_TRACE.append(f"Failed to write file: {path}. Error: {e}")
         thinking = build_agent_thinking(AGENT_TRACE)
         return (
-            format_status("Write failed.", reward=f"{safe_reward(0.001):.3f}", done=False, extra=str(e)),
+            format_status("Write failed.", reward=f"{safe_reward(0.01):.3f}", done=False, extra=str(e)),
             {"error": str(e)},
             build_agent_trace(AGENT_TRACE),
             "Agent Verdict:\n- File write failed",
@@ -421,7 +421,7 @@ def run_command_console(command):
         return (
             "",
             "",
-            f"{safe_reward(0.001):.3f}",
+            f"{safe_reward(0.01):.3f}",
             "Please enter a command to run.",
             "Command not executed.",
             {},
@@ -491,9 +491,9 @@ def run_command_console(command):
         return (
             "",
             str(e),
-            f"{safe_reward(0.001):.3f}",
+            f"{safe_reward(0.01):.3f}",
             "Command execution failed.",
-            format_status("Command failed.", reward=f"{safe_reward(0.001):.3f}", done=False, extra=str(e)),
+            format_status("Command failed.", reward=f"{safe_reward(0.01):.3f}", done=False, extra=str(e)),
             {"error": str(e)},
             build_agent_trace(AGENT_TRACE),
             "Agent Verdict:\n- Command execution failed",
@@ -1030,7 +1030,7 @@ def reset_endpoint(payload: Optional[ResetRequest] = Body(default=None)):
 
         return StepResponseModel(
             observation=build_observation_model(state),
-            reward=0.001,
+            reward=0.01,
             done=False,
             info={"message": "Environment reset successful."},
         )
@@ -1038,7 +1038,7 @@ def reset_endpoint(payload: Optional[ResetRequest] = Body(default=None)):
         fallback_state = snapshot_state()
         return StepResponseModel(
             observation=build_observation_model(fallback_state),
-            reward=0.001,
+            reward=0.01,
             done=False,
             info={"message": f"Reset failed: {str(e)}"},
         )
@@ -1061,7 +1061,7 @@ def step_endpoint(action: ActionRequest):
         fallback_state = snapshot_state()
         return StepResponseModel(
             observation=build_observation_model(fallback_state),
-            reward=0.001,
+            reward=0.01,
             done=False,
             info={"message": f"Step failed: {str(e)}"},
         )
