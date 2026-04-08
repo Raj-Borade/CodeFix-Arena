@@ -2,8 +2,8 @@ import os
 import shutil
 import sys
 
-EPS = 0.001
-MAX_SCORE = 0.999
+EPS = 0.01
+MAX_SCORE = 0.95
 
 
 class CodingTaskGrader:
