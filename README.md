@@ -69,3 +69,8 @@ Example breakdown:
   "efficiency": 0.15,
   "penalties": -0.05
 }
+
+✨ Features:
+- Validator-safe scoring (strict (0,1) range)
+- Multi-language support
+- Intelligent grading with fallback logic
