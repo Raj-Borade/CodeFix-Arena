@@ -18,15 +18,7 @@ class CodingTaskGrader:
             return MAX_SCORE
         if score <= 0.0:
             return EPS
-
-        safe_score = round(score, 3)
-
-        if safe_score >= 1.0:
-            return MAX_SCORE
-        if safe_score <= 0.0:
-            return EPS
-
-        return float(safe_score)
+        return score
 
     @staticmethod
     def safe_component(value) -> float:
@@ -39,15 +31,48 @@ class CodingTaskGrader:
             return MAX_SCORE
         if value <= 0.0:
             return EPS
+        return value
 
-        value = round(value, 3)
+    @staticmethod
+    def add_score(details: dict, key: str, value: float):
+        details[key] = CodingTaskGrader.safe_component(value)
 
-        if value >= 1.0:
-            return MAX_SCORE
-        if value <= 0.0:
-            return EPS
+    @staticmethod
+    def safe_text(value) -> str:
+        return str(value or "").strip()
 
-        return float(value)
+    @staticmethod
+    def read_if_exists(workspace, filename: str) -> str:
+        try:
+            return workspace.read_file(filename)
+        except Exception:
+            return ""
+
+    @staticmethod
+    def command_success(result: dict) -> bool:
+        return str(result.get("status", "")).strip().lower() == "success"
+
+    @staticmethod
+    def find_java_tools():
+        java_home = os.environ.get("JAVA_HOME", "").strip()
+        javac = shutil.which("javac")
+        java = shutil.which("java")
+
+        if not javac and java_home:
+            candidate = os.path.join(
+                java_home, "bin", "javac.exe" if os.name == "nt" else "javac"
+            )
+            if os.path.exists(candidate):
+                javac = candidate
+
+        if not java and java_home:
+            candidate = os.path.join(
+                java_home, "bin", "java.exe" if os.name == "nt" else "java"
+            )
+            if os.path.exists(candidate):
+                java = candidate
+
+        return javac, java
 
     @staticmethod
     def grade(task, workspace, last_command_result):
@@ -67,19 +92,21 @@ class CodingTaskGrader:
 
         task_type = task.get("type")
         expected_fix = task.get("expected_fix")
+        difficulty = str(task.get("difficulty", "medium")).strip().lower()
 
-        stdout = (last_command_result.get("stdout") or "").strip()
-        stderr = (last_command_result.get("stderr") or "").strip()
-        status = str(last_command_result.get("status", "error")).strip().lower()
-
+        stdout = CodingTaskGrader.safe_text(last_command_result.get("stdout"))
+        stderr = CodingTaskGrader.safe_text(last_command_result.get("stderr"))
+        status = CodingTaskGrader.safe_text(last_command_result.get("status")).lower()
         python_exe = sys.executable or "python"
 
         if status == "success":
-            reward += 0.3
-            score_breakdown["execution"] = CodingTaskGrader.safe_component(0.3)
+            reward += 0.28
+            score_breakdown["execution"] = CodingTaskGrader.safe_component(0.28)
             feedback_parts.append("Execution successful.")
         else:
-            feedback_parts.append("Execution failed.")
+            reward += 0.04
+            score_breakdown["execution"] = CodingTaskGrader.safe_component(0.04)
+            feedback_parts.append("Execution failed (partial credit given).")
 
         try:
             if task_type == "debug":
@@ -95,7 +122,9 @@ class CodingTaskGrader:
                     workspace, stdout
                 )
             else:
-                r, details, msgs = 0.05, {}, ["Fallback grading applied."]
+                r, details, msgs = CodingTaskGrader._grade_fallback(
+                    workspace, task, stdout
+                )
 
             reward += float(r)
 
@@ -113,22 +142,40 @@ class CodingTaskGrader:
 
         penalties = EPS
 
-        if "infinite" in stderr.lower():
-            penalties = -0.1
-            feedback_parts.append("Penalty: possible infinite loop detected.")
+        stderr_lower = stderr.lower()
+        if "infinite" in stderr_lower or "recursionerror" in stderr_lower:
+            penalties = -0.10
+            feedback_parts.append("Penalty: possible infinite loop or runaway recursion detected.")
 
-        if len(stdout) > 500:
+        if len(stdout) > 1200:
             penalties = min(penalties, -0.05) if penalties < 0 else -0.05
             feedback_parts.append("Penalty: excessive output.")
 
+        if "traceback" in stderr_lower:
+            penalties = min(penalties, -0.08) if penalties < 0 else -0.08
+            feedback_parts.append("Penalty: traceback detected.")
+
         if penalties < 0:
             reward += penalties
+
         reward = max(EPS, reward)
         score_breakdown["penalties"] = CodingTaskGrader.safe_component(
             penalties if penalties > 0 else EPS
         )
 
-        reward = CodingTaskGrader.clamp(float(reward))
+        difficulty_bonus = {
+            "easy": 0.0,
+            "medium": 0.01,
+            "hard": 0.02,
+        }.get(difficulty, 0.01)
+
+        reward += difficulty_bonus
+        score_breakdown["difficulty_bonus"] = CodingTaskGrader.safe_component(
+            difficulty_bonus if difficulty_bonus > 0 else EPS
+        )
+
+        reward = float(f"{reward:.6f}")
+        reward = min(MAX_SCORE, max(EPS, reward))
 
         if reward >= 0.85:
             score_breakdown["overall"] = "excellent"
@@ -148,46 +195,79 @@ class CodingTaskGrader:
         }
 
     @staticmethod
+    def _grade_fallback(workspace, task, stdout):
+        reward = 0.05
+        details = {}
+        messages = ["Fallback grading applied."]
+
+        files = task.get("files") or []
+        if files:
+            readable = 0
+            for f in files:
+                if CodingTaskGrader.read_if_exists(workspace, f):
+                    readable += 1
+            if readable == len(files):
+                reward += 0.06
+                CodingTaskGrader.add_score(details, "structure", 0.06)
+                messages.append("Expected files readable.")
+
+        if stdout:
+            reward += 0.05
+            CodingTaskGrader.add_score(details, "correctness", 0.05)
+            messages.append("Program produced output.")
+
+        return CodingTaskGrader.clamp(reward), details, messages
+
+    @staticmethod
     def _grade_python_debug(workspace, stdout, python_exe):
         reward = EPS
         details = {}
         messages = []
 
-        content = workspace.read_file("main.py")
+        content = CodingTaskGrader.read_if_exists(workspace, "main.py")
 
         if "def add(" in content:
-            reward += 0.12
-            details["structure"] = 0.12
-            messages.append("Function syntax corrected.")
+            reward += 0.10
+            CodingTaskGrader.add_score(details, "structure", 0.10)
+            messages.append("Function signature present.")
 
         if "return a + b" in content or "return a+b" in content:
             reward += 0.18
-            details["correctness"] = 0.18
-            messages.append("Correct logic detected.")
+            CodingTaskGrader.add_score(details, "correctness", 0.18)
+            messages.append("Addition logic corrected.")
 
-        hidden = workspace.run_command(
-            f"\"{python_exe}\" -c \"from main import add; print(add(10, 5))\""
-        )
+        if "print(add(2, 3))" in content or "print(add(2,3))" in content:
+            reward += 0.05
+            CodingTaskGrader.add_score(details, "robustness", 0.05)
+            messages.append("Expected call retained.")
 
-        if hidden.get("status") == "success":
-            reward += 0.10
-            details["execution_hidden"] = 0.10
+        hidden = {"status": "error", "stdout": "", "stderr": ""}
+        try:
+            hidden = workspace.run_command(
+                f"\"{python_exe}\" -c \"from main import add; print(add(10, 5))\""
+            )
+        except Exception:
+            pass
 
-            if "15" in hidden.get("stdout", ""):
-                reward += 0.15
-                details["robustness"] = 0.15
+        if CodingTaskGrader.command_success(hidden):
+            reward += 0.12
+            CodingTaskGrader.add_score(details, "execution_hidden", 0.12)
+
+            hidden_stdout = CodingTaskGrader.safe_text(hidden.get("stdout"))
+            if "15" in hidden_stdout:
+                reward += 0.14
+                CodingTaskGrader.add_score(details, "hidden_correctness", 0.14)
                 messages.append("Hidden test passed.")
 
         if stdout:
             reward += 0.05
-
             if stdout == "5":
                 reward += 0.15
-                details["execution_output"] = 0.15
+                CodingTaskGrader.add_score(details, "execution_output", 0.15)
                 messages.append("Expected output correct.")
             else:
-                reward += 0.05
-                details["execution_output_partial"] = 0.05
+                reward += 0.06
+                CodingTaskGrader.add_score(details, "execution_output_partial", 0.06)
 
         return CodingTaskGrader.clamp(reward), details, messages
 
@@ -197,49 +277,65 @@ class CodingTaskGrader:
         details = {}
         messages = []
 
-        content = workspace.read_file("app.py")
+        content = CodingTaskGrader.read_if_exists(workspace, "app.py")
 
         if "def calculate_total" in content:
             reward += 0.12
-            details["structure"] = 0.12
+            CodingTaskGrader.add_score(details, "structure", 0.12)
             messages.append("Helper function created.")
 
         helper_calls = content.count("calculate_total(")
         if helper_calls >= 3:
-            reward += 0.18
-            details["efficiency"] = 0.18
+            reward += 0.16
+            CodingTaskGrader.add_score(details, "efficiency", 0.16)
             messages.append("Logic reused properly.")
+        elif helper_calls >= 2:
+            reward += 0.12
+            CodingTaskGrader.add_score(details, "efficiency_partial", 0.12)
+            messages.append("Helper reuse detected.")
         elif helper_calls >= 1:
-            reward += 0.08
-            details["efficiency_partial"] = 0.08
+            reward += 0.06
+            CodingTaskGrader.add_score(details, "efficiency_partial", 0.06)
 
         repeated = content.count("total += 100") + content.count("total += 50")
         if repeated <= 2:
             reward += 0.12
-            details["duplication_reduction"] = 0.12
+            CodingTaskGrader.add_score(details, "duplication_reduction", 0.12)
             messages.append("Duplicate logic reduced.")
+        elif repeated <= 4:
+            reward += 0.05
+            CodingTaskGrader.add_score(details, "duplication_reduction_partial", 0.05)
 
-        hidden = workspace.run_command(f"\"{python_exe}\" app.py")
+        if "process_order()" in content and "process_cart()" in content:
+            reward += 0.05
+            CodingTaskGrader.add_score(details, "robustness", 0.05)
+            messages.append("Entry-point behavior preserved.")
 
-        if hidden.get("status") == "success":
+        hidden = {"status": "error", "stdout": "", "stderr": ""}
+        try:
+            hidden = workspace.run_command(f"\"{python_exe}\" app.py")
+        except Exception:
+            pass
+
+        if CodingTaskGrader.command_success(hidden):
             reward += 0.10
-            details["execution_hidden"] = 0.10
+            CodingTaskGrader.add_score(details, "execution_hidden", 0.10)
 
-            if hidden.get("stdout", "").count("150") >= 2:
-                reward += 0.15
-                details["correctness"] = 0.15
+            hidden_stdout = CodingTaskGrader.safe_text(hidden.get("stdout"))
+            if hidden_stdout.count("150") >= 2:
+                reward += 0.14
+                CodingTaskGrader.add_score(details, "correctness", 0.14)
                 messages.append("Behavior correct.")
 
         if stdout:
             reward += 0.05
-
             if stdout.count("150") >= 2:
-                reward += 0.15
-                details["execution_output"] = 0.15
+                reward += 0.14
+                CodingTaskGrader.add_score(details, "execution_output", 0.14)
                 messages.append("Output verified.")
             else:
-                reward += 0.05
-                details["execution_output_partial"] = 0.05
+                reward += 0.06
+                CodingTaskGrader.add_score(details, "execution_output_partial", 0.06)
 
         return CodingTaskGrader.clamp(reward), details, messages
 
@@ -249,63 +345,78 @@ class CodingTaskGrader:
         details = {}
         messages = []
 
-        service = workspace.read_file("CalculatorService.java")
-        formatter = workspace.read_file("ResultFormatter.java")
+        service = CodingTaskGrader.read_if_exists(workspace, "CalculatorService.java")
+        formatter = CodingTaskGrader.read_if_exists(workspace, "ResultFormatter.java")
+        main_file = CodingTaskGrader.read_if_exists(workspace, "Main.java")
 
         if "return a + b;" in service:
-            reward += 0.15
-            details["correctness"] = 0.15
-            messages.append("Logic fixed.")
+            reward += 0.14
+            CodingTaskGrader.add_score(details, "correctness", 0.14)
+            messages.append("Calculator logic fixed.")
 
         if "public static String format(" in formatter:
-            reward += 0.15
-            details["structure"] = 0.15
-            messages.append("Method fixed.")
+            reward += 0.12
+            CodingTaskGrader.add_score(details, "structure", 0.12)
+            messages.append("Formatter method present.")
 
         if "\"Result = \" + result" in formatter:
             reward += 0.10
-            details["output_format"] = 0.10
-            messages.append("Formatting correct.")
+            CodingTaskGrader.add_score(details, "output_format", 0.10)
+            messages.append("Output formatting correct.")
 
-        java_home = os.environ.get("JAVA_HOME", "").strip()
-        javac = shutil.which("javac")
-        java = shutil.which("java")
+        if "CalculatorService" in main_file and "ResultFormatter" in main_file:
+            reward += 0.08
+            CodingTaskGrader.add_score(details, "integration", 0.08)
+            messages.append("Main integrates service and formatter.")
 
-        if not javac and java_home:
-            candidate = os.path.join(
-                java_home, "bin", "javac.exe" if os.name == "nt" else "javac"
-            )
-            if os.path.exists(candidate):
-                javac = candidate
+        if ".add(" in main_file:
+            reward += 0.06
+            CodingTaskGrader.add_score(details, "usage_validation", 0.06)
+            messages.append("Addition method is used in main flow.")
 
-        if not java and java_home:
-            candidate = os.path.join(
-                java_home, "bin", "java.exe" if os.name == "nt" else "java"
-            )
-            if os.path.exists(candidate):
-                java = candidate
+        if ".format(" in main_file:
+            reward += 0.06
+            CodingTaskGrader.add_score(details, "formatter_usage", 0.06)
+            messages.append("Formatter is used in main flow.")
+
+        javac, java = CodingTaskGrader.find_java_tools()
 
         if javac and java:
-            hidden = workspace.run_command(
-                f"\"{javac}\" Main.java CalculatorService.java ResultFormatter.java && \"{java}\" Main"
-            )
+            hidden = {"status": "error", "stdout": "", "stderr": ""}
+            try:
+                hidden = workspace.run_command(
+                    f"\"{javac}\" Main.java CalculatorService.java ResultFormatter.java && \"{java}\" Main"
+                )
+            except Exception:
+                hidden = {"status": "error", "stdout": "", "stderr": "Java execution call failed."}
 
-            if hidden.get("status") == "success":
+            if CodingTaskGrader.command_success(hidden):
                 reward += 0.10
-                details["execution_hidden"] = 0.10
+                CodingTaskGrader.add_score(details, "execution_hidden", 0.10)
 
-                if "Result = 15" in hidden.get("stdout", ""):
-                    reward += 0.20
-                    details["robustness"] = 0.20
-                    messages.append("Hidden validation passed.")
+                hidden_stdout = CodingTaskGrader.safe_text(hidden.get("stdout"))
+                if "Result = 15" in hidden_stdout:
+                    reward += 0.16
+                    CodingTaskGrader.add_score(details, "robustness", 0.16)
+                    messages.append("Hidden Java validation passed.")
+                else:
+                    reward += 0.05
+                    CodingTaskGrader.add_score(details, "robustness_partial", 0.05)
+            else:
+                reward += 0.04
+                CodingTaskGrader.add_score(details, "execution_partial", 0.04)
+                messages.append("Java tools available but execution failed.")
         else:
-            messages.append("Java tools not available for hidden validation.")
+            reward += 0.06
+            CodingTaskGrader.add_score(details, "execution_partial", 0.06)
+            messages.append("Java tools missing, static validation credit assigned.")
 
         if "Result = 15" in stdout:
-            reward += 0.15
-            details["execution_output"] = 0.15
+            reward += 0.14
+            CodingTaskGrader.add_score(details, "execution_output", 0.14)
             messages.append("Final output correct.")
+        elif stdout:
+            reward += 0.05
+            CodingTaskGrader.add_score(details, "execution_output_partial", 0.05)
 
         return CodingTaskGrader.clamp(reward), details, messages
-    
-    
