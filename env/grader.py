@@ -14,6 +14,13 @@ class CodingTaskGrader:
         except Exception:
             return EPS
 
+        if score != score:  # NaN guard
+            return EPS
+        if score >= 1.0:
+            return MAX_SCORE
+        if score <= 0.0:
+            return EPS
+        score = round(score, 4)
         if score >= 1.0:
             return MAX_SCORE
         if score <= 0.0:
@@ -164,7 +171,7 @@ class CodingTaskGrader:
         )
 
         difficulty_bonus = {
-            "easy": 0.0,
+            "easy": 0.001,
             "medium": 0.01,
             "hard": 0.02,
         }.get(difficulty, 0.01)
