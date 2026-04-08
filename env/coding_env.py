@@ -7,8 +7,8 @@ from env.models import ActionModel, ObservationModel
 
 
 class CodingAssistantEnv:
-    MIN_REWARD = 0.001
-    MAX_REWARD = 0.999
+    MIN_REWARD = 0.01
+    MAX_REWARD = 0.95
 
     def __init__(self):
         self.state_data: Dict[str, Any] = {}
