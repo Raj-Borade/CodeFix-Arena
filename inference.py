@@ -12,8 +12,19 @@ MODEL_NAME = os.getenv("MODEL_NAME", "meta-llama/Llama-3-8b-instruct")
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY")
 
 
-def clamp_score(score: float) -> float:
-    return max(0.001, min(0.999, float(score)))
+def clamp_score(score) -> float:
+    """Strictly between 0 and 1. Never returns 0.0 or 1.0."""
+    try:
+        s = float(score)
+    except (TypeError, ValueError):
+        return 0.001
+    if s != s:  # NaN check
+        return 0.001
+    s = max(0.001, min(0.999, s))
+    s = round(s, 4)  # use 4 decimals — avoids 0.000 rounding
+    if s <= 0.0 or s >= 1.0:
+        s = 0.001
+    return s
 
 
 def log_start(label: str) -> None:
@@ -200,13 +211,14 @@ def solve_task(env: CodingAssistantEnv, client: OpenAI, task_id: int) -> float:
     })
     log_step("run_command", info)
 
+    # BUG FIX 1: use clamp_score (not round) so score is never 0.0 or 1.0
     safe_reward = clamp_score(reward)
 
     log_end(
         f"task_{task_id}",
         {
             "task_id": task_id,
-            "score": round(safe_reward, 3),
+            "score": clamp_score(safe_reward),  # was: round(safe_reward, 3) — round can produce 0.0
             "done": done,
         },
     )
@@ -250,9 +262,10 @@ def run_baseline() -> None:
                 },
             )
 
+    # BUG FIX 2: use clamp_score (not round) in summary scores — round can produce 0.0 or 1.0
     summary = {
-        "scores": {str(task_id): round(score, 3) for task_id, score in scores.items()},
-        "average_score": round(clamp_score(sum(scores.values()) / len(scores)), 3) if scores else 0.001,
+        "scores": {str(task_id): clamp_score(score) for task_id, score in scores.items()},
+        "average_score": clamp_score(sum(scores.values()) / len(scores)) if scores else 0.001,
     }
 
     log_end("baseline_run", summary)
