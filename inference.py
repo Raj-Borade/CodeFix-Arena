@@ -13,16 +13,16 @@ def clamp_score(score) -> float:
     try:
         s = float(score)
     except (TypeError, ValueError):
-        return 0.001
+        return 0.01
 
     if s != s:
-        return 0.001
+        return 0.01
     if s <= 0.0:
-        return 0.001
+        return 0.01
     if s >= 1.0:
-        return 0.999
+        return 0.95
 
-    return max(0.001, min(0.999, s))
+    return max(0.01, min(0.95, s))
 
 
 def log_start(label: str) -> None:
@@ -238,15 +238,15 @@ def run_baseline() -> None:
             score = solve_task(env, client, task_id)
             scores[task_id] = clamp_score(score)
         except Exception as e:
-            scores[task_id] = 0.001
+            scores[task_id] = 0.01
             log_end(f"task_{task_id}", {
                 "task_id": task_id,
                 "status": "error",
                 "message": str(e),
-                "score": 0.001,
+                "score": 0.01,
             })
 
-    average_score = 0.001
+    average_score = 0.01
     if scores:
         average_score = clamp_score(sum(scores.values()) / len(scores))
 
