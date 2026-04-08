@@ -2,6 +2,8 @@ import os
 import shutil
 import sys
 
+EPS = 0.001
+
 
 class CodingTaskGrader:
     @staticmethod
@@ -9,19 +11,19 @@ class CodingTaskGrader:
         try:
             score = float(score)
         except Exception:
-            return 0.001
+            return EPS
 
         if score >= 1.0:
             return 0.999
         if score <= 0.0:
-            return 0.001
+            return EPS
 
         safe_score = round(score, 3)
 
         if safe_score >= 1.0:
             return 0.999
         if safe_score <= 0.0:
-            return 0.001
+            return EPS
 
         return float(safe_score)
 
@@ -31,12 +33,12 @@ class CodingTaskGrader:
         feedback_parts = []
 
         score_breakdown = {
-            "execution": 0.0,
-            "correctness": 0.0,
-            "structure": 0.0,
-            "efficiency": 0.0,
-            "robustness": 0.0,
-            "penalties": 0.0,
+            "execution": EPS,
+            "correctness": EPS,
+            "structure": EPS,
+            "efficiency": EPS,
+            "robustness": EPS,
+            "penalties": EPS,
             "task_type": task.get("type", "unknown"),
             "expected_fix": task.get("expected_fix", "unknown"),
         }
@@ -52,7 +54,7 @@ class CodingTaskGrader:
 
         if status == "success":
             reward += 0.3
-            score_breakdown["execution"] = 0.3
+            score_breakdown["execution"] = max(EPS, 0.3)
             feedback_parts.append("Execution successful.")
         else:
             feedback_parts.append("Execution failed.")
@@ -74,7 +76,11 @@ class CodingTaskGrader:
                 r, details, msgs = 0.05, {}, ["Fallback grading applied."]
 
             reward += float(r)
-            score_breakdown.update(details)
+
+            # SAFE UPDATE (no 0.0 allowed)
+            for k, v in details.items():
+                score_breakdown[k] = max(EPS, float(v))
+
             feedback_parts.extend(msgs)
 
         except Exception as e:
@@ -92,7 +98,7 @@ class CodingTaskGrader:
             feedback_parts.append("Penalty: excessive output.")
 
         reward += penalties
-        score_breakdown["penalties"] = penalties
+        score_breakdown["penalties"] = max(EPS, penalties)
 
         reward = CodingTaskGrader.clamp(float(reward))
 
