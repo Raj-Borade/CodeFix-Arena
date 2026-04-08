@@ -3,6 +3,7 @@ import shutil
 import sys
 
 EPS = 0.001
+MAX_SCORE = 0.999
 
 
 class CodingTaskGrader:
@@ -14,22 +15,43 @@ class CodingTaskGrader:
             return EPS
 
         if score >= 1.0:
-            return 0.999
+            return MAX_SCORE
         if score <= 0.0:
             return EPS
 
         safe_score = round(score, 3)
 
         if safe_score >= 1.0:
-            return 0.999
+            return MAX_SCORE
         if safe_score <= 0.0:
             return EPS
 
         return float(safe_score)
 
     @staticmethod
+    def safe_component(value) -> float:
+        try:
+            value = float(value)
+        except Exception:
+            return EPS
+
+        if value >= 1.0:
+            return MAX_SCORE
+        if value <= 0.0:
+            return EPS
+
+        value = round(value, 3)
+
+        if value >= 1.0:
+            return MAX_SCORE
+        if value <= 0.0:
+            return EPS
+
+        return float(value)
+
+    @staticmethod
     def grade(task, workspace, last_command_result):
-        reward = 0.0
+        reward = EPS
         feedback_parts = []
 
         score_breakdown = {
@@ -54,7 +76,7 @@ class CodingTaskGrader:
 
         if status == "success":
             reward += 0.3
-            score_breakdown["execution"] = max(EPS, 0.3)
+            score_breakdown["execution"] = CodingTaskGrader.safe_component(0.3)
             feedback_parts.append("Execution successful.")
         else:
             feedback_parts.append("Execution failed.")
@@ -77,9 +99,11 @@ class CodingTaskGrader:
 
             reward += float(r)
 
-            # SAFE UPDATE (no 0.0 allowed)
             for k, v in details.items():
-                score_breakdown[k] = max(EPS, float(v))
+                if isinstance(v, (int, float)):
+                    score_breakdown[k] = CodingTaskGrader.safe_component(v)
+                else:
+                    score_breakdown[k] = v
 
             feedback_parts.extend(msgs)
 
@@ -87,18 +111,22 @@ class CodingTaskGrader:
             feedback_parts.append(f"Grader error: {e}")
             score_breakdown["grader_error"] = str(e)
 
-        penalties = 0.0
+        penalties = EPS
 
         if "infinite" in stderr.lower():
-            penalties -= 0.1
+            penalties = -0.1
             feedback_parts.append("Penalty: possible infinite loop detected.")
 
         if len(stdout) > 500:
-            penalties -= 0.05
+            penalties = min(penalties, -0.05) if penalties < 0 else -0.05
             feedback_parts.append("Penalty: excessive output.")
 
-        reward += penalties
-        score_breakdown["penalties"] = max(EPS, penalties)
+        if penalties < 0:
+            reward += penalties
+        reward = max(EPS, reward)
+        score_breakdown["penalties"] = CodingTaskGrader.safe_component(
+            penalties if penalties > 0 else EPS
+        )
 
         reward = CodingTaskGrader.clamp(float(reward))
 
@@ -106,10 +134,12 @@ class CodingTaskGrader:
             score_breakdown["overall"] = "excellent"
         elif reward >= 0.65:
             score_breakdown["overall"] = "good"
-        elif reward > 0.0:
+        elif reward > EPS:
             score_breakdown["overall"] = "partial"
         else:
             score_breakdown["overall"] = "failed"
+
+        score_breakdown["reward"] = reward
 
         return {
             "reward": reward,
@@ -119,7 +149,7 @@ class CodingTaskGrader:
 
     @staticmethod
     def _grade_python_debug(workspace, stdout, python_exe):
-        reward = 0.0
+        reward = EPS
         details = {}
         messages = []
 
@@ -157,12 +187,13 @@ class CodingTaskGrader:
                 messages.append("Expected output correct.")
             else:
                 reward += 0.05
+                details["execution_output_partial"] = 0.05
 
-        return reward, details, messages
+        return CodingTaskGrader.clamp(reward), details, messages
 
     @staticmethod
     def _grade_python_refactor(workspace, stdout, python_exe):
-        reward = 0.0
+        reward = EPS
         details = {}
         messages = []
 
@@ -180,6 +211,7 @@ class CodingTaskGrader:
             messages.append("Logic reused properly.")
         elif helper_calls >= 1:
             reward += 0.08
+            details["efficiency_partial"] = 0.08
 
         repeated = content.count("total += 100") + content.count("total += 50")
         if repeated <= 2:
@@ -191,6 +223,7 @@ class CodingTaskGrader:
 
         if hidden.get("status") == "success":
             reward += 0.10
+            details["execution_hidden"] = 0.10
 
             if hidden.get("stdout", "").count("150") >= 2:
                 reward += 0.15
@@ -206,12 +239,13 @@ class CodingTaskGrader:
                 messages.append("Output verified.")
             else:
                 reward += 0.05
+                details["execution_output_partial"] = 0.05
 
-        return reward, details, messages
+        return CodingTaskGrader.clamp(reward), details, messages
 
     @staticmethod
     def _grade_java_multifile(workspace, stdout):
-        reward = 0.0
+        reward = EPS
         details = {}
         messages = []
 
@@ -256,10 +290,14 @@ class CodingTaskGrader:
                 f"\"{javac}\" Main.java CalculatorService.java ResultFormatter.java && \"{java}\" Main"
             )
 
-            if hidden.get("status") == "success" and "Result = 15" in hidden.get("stdout", ""):
-                reward += 0.20
-                details["robustness"] = 0.20
-                messages.append("Hidden validation passed.")
+            if hidden.get("status") == "success":
+                reward += 0.10
+                details["execution_hidden"] = 0.10
+
+                if "Result = 15" in hidden.get("stdout", ""):
+                    reward += 0.20
+                    details["robustness"] = 0.20
+                    messages.append("Hidden validation passed.")
         else:
             messages.append("Java tools not available for hidden validation.")
 
@@ -268,4 +306,6 @@ class CodingTaskGrader:
             details["execution_output"] = 0.15
             messages.append("Final output correct.")
 
-        return reward, details, messages
+        return CodingTaskGrader.clamp(reward), details, messages
+    
+    
