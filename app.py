@@ -21,19 +21,15 @@ def safe_reward(value: Any) -> float:
     except Exception:
         return 0.001
 
+    if value != value:
+        return 0.001
+
     if value >= 1.0:
         return 0.999
     if value <= 0.0:
         return 0.001
 
-    value = round(value, 3)
-
-    if value >= 1.0:
-        return 0.999
-    if value <= 0.0:
-        return 0.001
-
-    return float(value)
+    return max(0.001, min(0.999, value))
 
 
 class ResetRequest(BaseModel):
@@ -75,6 +71,14 @@ class StepResponseModel(BaseModel):
 
 def to_jsonable(data: Any) -> Any:
     return jsonable_encoder(data)
+
+
+def model_to_dict(model: Any) -> Dict[str, Any]:
+    if hasattr(model, "model_dump"):
+        return model.model_dump(exclude_none=True)
+    if hasattr(model, "dict"):
+        return model.dict(exclude_none=True)
+    return {}
 
 
 def build_observation_model(state: Dict[str, Any]) -> ObservationModel:
@@ -1014,35 +1018,53 @@ base_app = FastAPI(title="CodeFix Arena OpenEnv Server")
 
 @base_app.post("/reset", response_model=StepResponseModel)
 def reset_endpoint(payload: Optional[ResetRequest] = Body(default=None)):
-    task_id = payload.task_id if payload else None
+    try:
+        task_id = payload.task_id if payload else None
 
-    if task_id is None:
-        state = env.reset()
-    else:
-        state = env.reset(task_id=int(task_id))
+        if task_id is None:
+            state = env.reset()
+        else:
+            state = env.reset(task_id=int(task_id))
 
-    snapshot_state(state)
+        snapshot_state(state)
 
-    return StepResponseModel(
-        observation=build_observation_model(state),
-        reward=safe_reward(0.001),
-        done=False,
-        info={"message": "Environment reset successful."},
-    )
+        return StepResponseModel(
+            observation=build_observation_model(state),
+            reward=0.001,
+            done=False,
+            info={"message": "Environment reset successful."},
+        )
+    except Exception as e:
+        fallback_state = snapshot_state()
+        return StepResponseModel(
+            observation=build_observation_model(fallback_state),
+            reward=0.001,
+            done=False,
+            info={"message": f"Reset failed: {str(e)}"},
+        )
 
 
 @base_app.post("/step", response_model=StepResponseModel)
 def step_endpoint(action: ActionRequest):
-    action_payload = action.model_dump(exclude_none=True)
-    state, reward, done, info = env.step(action_payload)
-    snapshot_state(state)
+    try:
+        action_payload = model_to_dict(action)
+        state, reward, done, info = env.step(action_payload)
+        snapshot_state(state)
 
-    return StepResponseModel(
-        observation=build_observation_model(state),
-        reward=safe_reward(reward),
-        done=bool(done),
-        info=to_jsonable(info),
-    )
+        return StepResponseModel(
+            observation=build_observation_model(state),
+            reward=safe_reward(reward),
+            done=bool(done),
+            info=to_jsonable(info),
+        )
+    except Exception as e:
+        fallback_state = snapshot_state()
+        return StepResponseModel(
+            observation=build_observation_model(fallback_state),
+            reward=0.001,
+            done=False,
+            info={"message": f"Step failed: {str(e)}"},
+        )
 
 
 @base_app.get("/state", response_model=ObservationModel)
@@ -1058,4 +1080,3 @@ app = gr.mount_gradio_app(base_app, demo, path="/")
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "7860"))
     uvicorn.run(app, host="0.0.0.0", port=port)
-
