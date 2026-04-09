@@ -3,7 +3,6 @@ import shutil
 import sys
 from typing import Any, Dict, Tuple
 
-
 EPS = 0.01
 MAX_SCORE = 0.95
 
@@ -16,16 +15,18 @@ class CodingTaskGrader:
         except Exception:
             return EPS
 
-        if score >= 1.0:
-            return MAX_SCORE
         if score <= 0.0:
             return EPS
+        if score >= 1.0:
+            return MAX_SCORE
 
         score = float(f"{score:.6f}")
-        if score >= 1.0:
-            return MAX_SCORE
+
         if score <= 0.0:
             return EPS
+        if score >= 1.0:
+            return MAX_SCORE
+
         return score
 
     @staticmethod
@@ -154,7 +155,7 @@ class CodingTaskGrader:
             feedback_parts.append(f"Grader error: {e}")
             score_breakdown["grader_error"] = str(e)
 
-        penalty_total = 0.001
+        penalty_total = 0.0
         stderr_lower = stderr.lower()
 
         if "infinite" in stderr_lower or "recursionerror" in stderr_lower:
@@ -437,3 +438,5 @@ class CodingTaskGrader:
             CodingTaskGrader.add_score(details, "execution_output_partial", 0.05)
 
         return CodingTaskGrader.clamp(reward), details, messages
+
+
