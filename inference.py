@@ -1,4 +1,3 @@
-import json
 import os
 from typing import Any, Dict, List, Optional
 
@@ -35,6 +34,23 @@ def clamp_score(score: Any) -> float:
     return max(MIN_SCORE, min(MAX_SCORE, value))
 
 
+def log_start(task_name: str) -> None:
+    print(f"[START] task={task_name}", flush=True)
+
+
+def log_step(task_name: str, action: str, reward: Any) -> None:
+    safe_reward = clamp_score(reward)
+    print(
+        f"[STEP] task={task_name} action={action} reward={safe_reward:.6f}",
+        flush=True,
+    )
+
+
+def log_end(task_name: str, score: Any) -> None:
+    safe_score = clamp_score(score)
+    print(f"[END] task={task_name} score={safe_score:.6f}", flush=True)
+
+
 def make_client() -> Optional[OpenAI]:
     try:
         api_base_url = os.environ.get("API_BASE_URL")
@@ -51,8 +67,8 @@ def make_client() -> Optional[OpenAI]:
         return None
 
 
-def get_solution_for_task(task_id: int) -> List[Dict[str, str]]:
-    if task_id == 1:
+def get_solution_for_task(task_name: str) -> List[Dict[str, str]]:
+    if task_name == "task_one":
         return [
             {
                 "path": "main.py",
@@ -64,7 +80,7 @@ print(add(2, 3))
             }
         ]
 
-    if task_id == 2:
+    if task_name == "task_two":
         return [
             {
                 "path": "app.py",
@@ -86,7 +102,7 @@ process_cart()
             }
         ]
 
-    if task_id == 3:
+    if task_name == "task_three":
         return [
             {
                 "path": "CalculatorService.java",
@@ -111,53 +127,83 @@ process_cart()
     return []
 
 
-def solve_task(env: CodingAssistantEnv, task_id: int) -> float:
-    env.reset(task_id=task_id)
-    env.step({"tool": "list_files"})
+def task_name_from_id(task_id: Any) -> str:
+    mapping = {
+        1: "task_one",
+        2: "task_two",
+        3: "task_three",
+    }
+    try:
+        return mapping.get(int(task_id), "task_generic")
+    except Exception:
+        return "task_generic"
 
-    for solution in get_solution_for_task(task_id):
-        env.step({"tool": "read_file", "path": solution["path"]})
-        env.step(
+
+def solve_task(env: CodingAssistantEnv, task: Dict[str, Any]) -> float:
+    task_name = task_name_from_id(task.get("id"))
+    log_start(task_name)
+
+    env.reset(task_id=task.get("id"))
+
+    _, reward, _, _ = env.step({"tool": "list_files"})
+    log_step(task_name, "list_files", reward)
+
+    for solution in get_solution_for_task(task_name):
+        _, reward, _, _ = env.step(
+            {
+                "tool": "read_file",
+                "path": solution["path"],
+            }
+        )
+        log_step(task_name, "read_file", reward)
+
+        _, reward, _, _ = env.step(
             {
                 "tool": "write_file",
                 "path": solution["path"],
                 "content": solution["content"],
             }
         )
+        log_step(task_name, "write_file", reward)
 
     run_command = env.current_task["run_command"]
-    _, reward, _, _ = env.step({"tool": "run_command", "command": run_command})
-    return clamp_score(reward)
+    _, reward, _, _ = env.step(
+        {
+            "tool": "run_command",
+            "command": run_command,
+        }
+    )
+    final_score = clamp_score(reward)
+    log_step(task_name, "run_command", final_score)
+    log_end(task_name, final_score)
+
+    return final_score
 
 
 def run_baseline() -> None:
-    _ = make_client()  # optional for compatibility; does not affect scoring output
+    _ = make_client()
 
     env = CodingAssistantEnv()
     tasks = env.list_tasks()
 
-    task_scores: List[float] = []
+    collected_scores: List[float] = []
 
     for task in tasks:
         try:
-            score = solve_task(env, int(task["id"]))
-            task_scores.append(clamp_score(score))
+            score = solve_task(env, task)
+            collected_scores.append(clamp_score(score))
         except Exception:
-            task_scores.append(MIN_SCORE)
+            fallback_score = MIN_SCORE
+            task_name = task_name_from_id(task.get("id"))
+            log_start(task_name)
+            log_step(task_name, "fallback", fallback_score)
+            log_end(task_name, fallback_score)
+            collected_scores.append(fallback_score)
 
-    if not task_scores:
-        task_scores = [MIN_SCORE]
-
-    average_score = clamp_score(sum(task_scores) / len(task_scores))
-
-    print(
-        json.dumps(
-            {
-                "task_scores": [clamp_score(score) for score in task_scores],
-                "average_score": average_score,
-            }
-        )
-    )
+    if not collected_scores:
+        log_start("task_generic")
+        log_step("task_generic", "fallback", MIN_SCORE)
+        log_end("task_generic", MIN_SCORE)
 
 
 if __name__ == "__main__":
