@@ -3,7 +3,7 @@ name = "codefix-arena"
 version = "0.1.0"
 description = "OpenEnv coding assistant environment"
 authors = [
-    { name="Raj Borade" }
+    { name = "Raj Borade" }
 ]
 dependencies = [
     "openenv-core",
@@ -14,9 +14,6 @@ dependencies = [
     "gradio",
     "python-dotenv"
 ]
-
-[project.scripts]
-server = "server.app:main"
 
 [build-system]
 requires = ["setuptools", "wheel"]
