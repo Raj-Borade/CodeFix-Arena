@@ -45,16 +45,25 @@ def safe_task_label(task_id: int) -> str:
 
 
 def log_start(label: str) -> None:
-    return
+    print(f"\n[START] {label}")
 
 
 def log_step(label: str, payload: Optional[Dict[str, Any]] = None) -> None:
-    return
+    print(f"\n[STEP] {label}")
+    if payload is not None:
+        try:
+            print(json.dumps(payload))
+        except Exception:
+            print(json.dumps({"message": "step_log_unavailable"}))
 
 
 def log_end(label: str, payload: Optional[Dict[str, Any]] = None) -> None:
-    if payload:
-        print(json.dumps(payload))
+    print(f"\n[END] {label}")
+    if payload is not None:
+        try:
+            print(json.dumps(payload))
+        except Exception:
+            print(json.dumps({"message": "end_log_unavailable"}))
 
 
 def sanitize_trace_payload(payload: Any) -> Dict[str, Any]:
@@ -136,7 +145,8 @@ def make_client() -> Optional[OpenAI]:
             api_key=api_key,
         )
 
-    except Exception:
+    except Exception as e:
+        log_end("client_initialization", {"message": str(e)})
         return None
 
 
@@ -300,6 +310,8 @@ def solve_task(env: CodingAssistantEnv, client: OpenAI, task_id: int) -> float:
 
 
 def run_baseline() -> None:
+    log_start("baseline_run")
+
     client = make_client()
     if client is None:
         log_end("baseline_run", {"average_score": MIN_SCORE})
@@ -331,5 +343,3 @@ if __name__ == "__main__":
         run_baseline()
     except Exception:
         log_end("program", {"average_score": MIN_SCORE})
-        
-    
