@@ -14,6 +14,36 @@ env = CodingAssistantEnv()
 AGENT_TRACE = []
 LAST_STATE: Dict[str, Any] = {}
 
+def sanitize_info_payload(data: Any) -> Any:
+    if not isinstance(data, dict):
+        return {}
+
+    clean = {}
+
+    for k, v in data.items():
+        key = str(k).lower()
+
+        # REMOVE risky numeric fields
+        if key in {
+            "reward",
+            "scores",
+            "average_score",
+            "step",
+            "max_steps",
+            "current_step",
+            "done",
+        }:
+            continue
+
+        if isinstance(v, (int, float, bool)):
+            continue
+
+        if isinstance(v, dict):
+            clean[k] = sanitize_info_payload(v)
+        else:
+            clean[k] = v
+
+    return clean
 
 def safe_reward(value: Any) -> float:
     try:
@@ -237,10 +267,9 @@ def load_task_console(task_id):
         )
 
         score_breakdown = {
-            "step": state.get("step", 0),
-            "max_steps": state.get("max_steps", 0),
-            "files": files,
-            "command_prefilled": default_command,
+            "status": "updated",
+            "action": "write_file",
+            "file": path
         }
 
         verdict = (
@@ -381,10 +410,9 @@ def write_file_console(path, content):
         safe = safe_reward(reward)
 
         score_breakdown = {
-            "step": state.get("step", 0),
-            "max_steps": state.get("max_steps", 0),
-            "last_action": "write_file",
-            "path": path,
+            "status": "updated",
+            "action": "write_file",
+            "file": path
         }
 
         verdict = (
@@ -456,8 +484,8 @@ def run_command_console(command):
         score_breakdown = info.get("score_breakdown", {})
         if not score_breakdown:
             score_breakdown = {
-                "step": state.get("step", 0),
-                "max_steps": state.get("max_steps", 0),
+                "status": "updated",
+                "action": "write_file",
                 "last_action": "run_command",
                 "command": command,
                 "command_status": result.get("status", "unknown"),
@@ -706,8 +734,8 @@ def auto_fix_console(task_id, current_path):
         safe = safe_reward(reward)
 
         score_breakdown = {
-            "step": state.get("step", 0),
-            "max_steps": state.get("max_steps", 0),
+            "status": "updated",
+            "action": "write_file",
             "last_action": "auto_fix_write",
             "path": current_path,
         }
@@ -1051,12 +1079,15 @@ def step_endpoint(action: ActionRequest):
         state, reward, done, info = env.step(action_payload)
         snapshot_state(state)
 
+        safe_info = sanitize_info_payload(info)
+
         return StepResponseModel(
             observation=build_observation_model(state),
             reward=safe_reward(reward),
             done=bool(done),
-            info=to_jsonable(info),
+            info=safe_info,
         )
+
     except Exception as e:
         fallback_state = snapshot_state()
         return StepResponseModel(
