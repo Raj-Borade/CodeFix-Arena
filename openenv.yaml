@@ -1,6 +1,10 @@
 name: codefix-arena
 description: A real-world coding environment for debugging, refactoring, and multi-file code repair.
 version: "0.1.0"
+
+framework: openenv
+language: python
+
 entrypoint: env.coding_env:CodingAssistantEnv
 
 authors:
@@ -14,4 +18,4 @@ tags:
   - python
   - java
 
-license: mit
+license: MIT
