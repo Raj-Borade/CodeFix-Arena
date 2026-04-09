@@ -1,15 +1,14 @@
-def process_order():
+def calculate_total():
     total = 0
     total += 100
     total += 50
-    print(total)
+    return total
+
+def process_order():
+    print(calculate_total())
 
 def process_cart():
-    total = 0
-    total += 100
-    total += 50
-    print(total)
+    print(calculate_total())
 
-
-    process_order()
-    process_cart()
+process_order()
+process_cart()
