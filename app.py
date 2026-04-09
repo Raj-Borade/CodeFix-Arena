@@ -14,6 +14,7 @@ env = CodingAssistantEnv()
 AGENT_TRACE = []
 LAST_STATE: Dict[str, Any] = {}
 
+
 def sanitize_info_payload(data: Any) -> Any:
     if not isinstance(data, dict):
         return {}
@@ -23,7 +24,6 @@ def sanitize_info_payload(data: Any) -> Any:
     for k, v in data.items():
         key = str(k).lower()
 
-        # REMOVE risky numeric fields
         if key in {
             "reward",
             "scores",
@@ -44,6 +44,7 @@ def sanitize_info_payload(data: Any) -> Any:
             clean[k] = v
 
     return clean
+
 
 def safe_reward(value: Any) -> float:
     try:
@@ -267,9 +268,9 @@ def load_task_console(task_id):
         )
 
         score_breakdown = {
-            "status": "updated",
-            "action": "write_file",
-            "file": path
+            "status": "loaded",
+            "action": "load_task",
+            "file": first_file if first_file else "",
         }
 
         verdict = (
@@ -412,7 +413,7 @@ def write_file_console(path, content):
         score_breakdown = {
             "status": "updated",
             "action": "write_file",
-            "file": path
+            "file": path,
         }
 
         verdict = (
@@ -484,12 +485,10 @@ def run_command_console(command):
         score_breakdown = info.get("score_breakdown", {})
         if not score_breakdown:
             score_breakdown = {
-                "status": "updated",
-                "action": "write_file",
-                "last_action": "run_command",
+                "status": "executed",
+                "action": "run_command",
                 "command": command,
                 "command_status": result.get("status", "unknown"),
-                "reward": safe,
             }
 
         verdict = (
@@ -735,9 +734,8 @@ def auto_fix_console(task_id, current_path):
 
         score_breakdown = {
             "status": "updated",
-            "action": "write_file",
-            "last_action": "auto_fix_write",
-            "path": current_path,
+            "action": "auto_fix_write",
+            "file": current_path,
         }
 
         verdict = (
