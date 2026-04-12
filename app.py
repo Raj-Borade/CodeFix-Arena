@@ -1821,7 +1821,7 @@ def create_demo():
 
         with gr.Tabs():
             with gr.Tab("Arena"):
-                gr.Markdown("## 🧩 Guided Challenge Workspace")
+                gr.Markdown("## Challenge Workspace")
 
                 with gr.Row():
                     with gr.Column(scale=3):
@@ -1844,7 +1844,7 @@ def create_demo():
                     status_box = gr.Textbox(label="Workspace Status", lines=6)
                     verdict_box = gr.Textbox(label="Result Summary", lines=6)
 
-                gr.Markdown("### 📁 Project Workspace")
+                gr.Markdown("### Project Workspace")
 
                 with gr.Row():
                     with gr.Column(scale=1):
@@ -1859,7 +1859,7 @@ def create_demo():
                     with gr.Column(scale=2):
                         file_content_box = gr.Code(label="Editor", language="python", lines=24)
 
-                gr.Markdown("### ⚡ Run and Inspect")
+                gr.Markdown("### Run and Inspect")
 
                 with gr.Row():
                     command_input = gr.Textbox(
@@ -1872,7 +1872,7 @@ def create_demo():
                     stdout_box = gr.Textbox(label="Output", lines=8)
                     stderr_box = gr.Textbox(label="Errors / Warnings", lines=8)
 
-                gr.Markdown("### 📊 Evaluation")
+                gr.Markdown("### Evaluation")
 
                 with gr.Row():
                     reward_box = gr.Textbox(label="Reward", lines=1)
@@ -1880,11 +1880,11 @@ def create_demo():
 
                 score_breakdown_box = gr.JSON(label="Score Breakdown")
 
-                with gr.Accordion("🧠 Agent Insights", open=True):
+                with gr.Accordion("Agent Insights", open=True):
                     agent_trace_box = gr.Textbox(label="Action Trace", lines=10)
                     thinking_box = gr.Markdown(label="Thinking Viewer")
 
-                with gr.Accordion("💡 Debug Assistant", open=False):
+                with gr.Accordion("Debug Assistant", open=False):
                     gr.Markdown(
                         """
 Ask natural questions like:
@@ -1977,7 +1977,7 @@ Ask natural questions like:
                             <span class="playground-chip">Live Trace</span>
                             <span class="playground-chip">Judge-Friendly Demo</span>
                         </div>
-                        <h2>🧪 Black Playground</h2>
+                        <h2>Playground</h2>
                         <p>Paste code, import a source file, run fast analysis, and open a plain-black execution panel that simulates how the program likely moved through its logic.</p>
                     </div>
                     """
@@ -2006,7 +2006,7 @@ Ask natural questions like:
 
                 with gr.Row():
                     analyze_button = gr.Button("Run Analysis", variant="primary")
-                    simulate_button = gr.Button("🧠 Open Live Trace", elem_classes=["sim-open-btn"])
+                    simulate_button = gr.Button("Open Live Trace", elem_classes=["sim-open-btn"])
 
                 with gr.Row():
                     playground_summary = gr.Textbox(label="Summary / Import Status", lines=6)
