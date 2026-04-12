@@ -1,4 +1,6 @@
+import html
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 import gradio as gr
@@ -323,16 +325,13 @@ def load_task_console(task_id):
 
 def list_files_console():
     try:
-        state, reward, done, info = env.step({"tool": "list_files"})
-        snapshot_state(state)
-        files = info.get("tool_result", {}).get("files", [])
+        files = env.workspace.list_files()
         AGENT_TRACE.append("Listed workspace files.")
         thinking = build_agent_thinking(AGENT_TRACE)
-        safe = safe_reward(reward)
 
         return (
             "\n".join(files),
-            format_status("Workspace file list refreshed.", reward=f"{safe:.3f}", done=done),
+            format_status("Workspace file list refreshed.", reward=f"{safe_reward(0.01):.3f}", done=False),
             build_agent_trace(AGENT_TRACE),
             thinking,
         )
@@ -358,20 +357,13 @@ def read_file_console(path):
         )
 
     try:
-        state, reward, done, info = env.step({
-            "tool": "read_file",
-            "path": path,
-        })
-        snapshot_state(state)
-
+        content = env.workspace.read_file(path)
         AGENT_TRACE.append(f"Read file: {path}.")
-        content = info.get("tool_result", {}).get("content", "")
         thinking = build_agent_thinking(AGENT_TRACE)
-        safe = safe_reward(reward)
 
         return (
             content,
-            format_status("File read successfully.", reward=f"{safe:.3f}", done=done),
+            format_status("File read successfully.", reward=f"{safe_reward(0.01):.3f}", done=False),
             build_agent_trace(AGENT_TRACE),
             thinking,
         )
@@ -398,17 +390,9 @@ def write_file_console(path, content):
         )
 
     try:
-        state, reward, done, info = env.step({
-            "tool": "write_file",
-            "path": path,
-            "content": content or "",
-        })
-        snapshot_state(state)
-
+        message = env.workspace.write_file(path, content or "")
         AGENT_TRACE.append(f"Wrote updated content to {path}.")
-
-        tool_message = info.get("tool_result", {}).get("message", "Write completed.")
-        safe = safe_reward(reward)
+        safe = safe_reward(0.01)
 
         score_breakdown = {
             "status": "updated",
@@ -420,13 +404,13 @@ def write_file_console(path, content):
             "Agent Verdict:\n"
             f"- File updated: {path}\n"
             f"- Reward impact: {safe:.3f}\n"
-            f"- Episode done: {done}"
+            f"- Episode done: False"
         )
 
         thinking = build_agent_thinking(AGENT_TRACE)
 
         return (
-            format_status(tool_message, reward=f"{safe:.3f}", done=done),
+            format_status(message or "Write completed.", reward=f"{safe:.3f}", done=False),
             score_breakdown,
             build_agent_trace(AGENT_TRACE),
             verdict,
@@ -444,8 +428,57 @@ def write_file_console(path, content):
         )
 
 
+
+
+def normalize_workspace_command(command: str) -> str:
+    command = str(command or "").strip()
+    if not command:
+        return ""
+
+    # Preserve valid absolute interpreter paths exactly as entered.
+    # These are commonly required on local Windows setups.
+    if re.match(r'^\s*"?[A-Za-z]:\.*python(?:w)?\.exe"?(?:\s+.*)?$', command, flags=re.IGNORECASE):
+        return command
+
+    # Only normalize launcher-style commands that do not use an absolute path.
+    command = re.sub(r'^\s*"?python(?:w)?\.exe"?(?=\s|$)', 'python', command, flags=re.IGNORECASE)
+    command = re.sub(r'^\s*"?py(?:\.exe)?"?(?=\s|$)', 'py', command, flags=re.IGNORECASE)
+
+    return command.strip()
+
+
+def extract_command_result(info: Any, state: Dict[str, Any]) -> Dict[str, str]:
+    info = info or {}
+    state = state or {}
+
+    result = info.get("tool_result", {}) if isinstance(info, dict) else {}
+    state_result = state.get("last_command_result", {}) if isinstance(state, dict) else {}
+
+    if not isinstance(result, dict):
+        result = {}
+    if not isinstance(state_result, dict):
+        state_result = {}
+
+    merged = {
+        "status": str(result.get("status") or state_result.get("status") or ""),
+        "stdout": str(result.get("stdout") or state_result.get("stdout") or ""),
+        "stderr": str(result.get("stderr") or state_result.get("stderr") or ""),
+    }
+
+    if not merged["status"]:
+        if merged["stdout"] and not merged["stderr"]:
+            merged["status"] = "success"
+        elif merged["stderr"]:
+            merged["status"] = "error"
+        else:
+            merged["status"] = "unknown"
+
+    return merged
+
 def run_command_console(command):
-    command = (command or "").strip()
+    raw_command = str(command or "").strip()
+    command = normalize_workspace_command(raw_command)
+
     if not command:
         return (
             "",
@@ -466,23 +499,31 @@ def run_command_console(command):
         })
         snapshot_state(state)
 
-        result = info.get("tool_result", {})
+        info = info or {}
+        result = extract_command_result(info, state)
         stdout = result.get("stdout", "")
         stderr = result.get("stderr", "")
-        feedback = info.get("feedback", "")
+        feedback = info.get("feedback", "") if isinstance(info, dict) else ""
         safe = safe_reward(reward)
 
         AGENT_TRACE.append(f"Ran command: {command}.")
+        if raw_command != command:
+            AGENT_TRACE.append(f"Normalized command from: {raw_command}")
         AGENT_TRACE.append(f"Command status: {result.get('status', 'unknown')}.")
+
+        extra_lines = []
+        if raw_command != command:
+            extra_lines.append(f"Normalized Command: {command}")
+        extra_lines.append(f"Expected Fix: {info.get('expected_fix', 'N/A') if isinstance(info, dict) else 'N/A'}")
 
         status = format_status(
             f"Command status: {result.get('status', 'unknown')}",
             reward=f"{safe:.3f}",
             done=done,
-            extra=f"Expected Fix: {info.get('expected_fix', 'N/A')}",
+            extra="\n".join(extra_lines),
         )
 
-        score_breakdown = info.get("score_breakdown", {})
+        score_breakdown = info.get("score_breakdown", {}) if isinstance(info, dict) else {}
         if not score_breakdown:
             score_breakdown = {
                 "status": "executed",
@@ -490,6 +531,18 @@ def run_command_console(command):
                 "command": command,
                 "command_status": result.get("status", "unknown"),
             }
+        elif isinstance(score_breakdown, dict):
+            score_breakdown = dict(score_breakdown)
+            score_breakdown.setdefault("command", command)
+            score_breakdown["command_status"] = result.get("status", score_breakdown.get("command_status", "unknown"))
+
+        if not feedback:
+            if stdout:
+                feedback = "Command executed and produced console output."
+            elif stderr:
+                feedback = "Command executed with runtime or compile feedback."
+            else:
+                feedback = "Command executed, but no visible console output was returned."
 
         verdict = (
             "Agent Verdict:\n"
@@ -512,7 +565,7 @@ def run_command_console(command):
             thinking,
         )
     except Exception as e:
-        AGENT_TRACE.append(f"Command run failed: {command}. Error: {e}")
+        AGENT_TRACE.append(f"Command run failed: {raw_command}. Error: {e}")
         thinking = build_agent_thinking(AGENT_TRACE)
 
         return (
@@ -526,7 +579,6 @@ def run_command_console(command):
             "Agent Verdict:\n- Command execution failed",
             thinking,
         )
-
 
 def ask_assistant_console(task_id, file_content, user_message):
     task_id = int(task_id)
@@ -722,15 +774,9 @@ def auto_fix_console(task_id, current_path):
         )
 
     try:
-        state, reward, done, info = env.step({
-            "tool": "write_file",
-            "path": current_path,
-            "content": fixed_code,
-        })
-        snapshot_state(state)
-
+        message = env.workspace.write_file(current_path, fixed_code)
         AGENT_TRACE.append(f"Auto-fix applied to {current_path}.")
-        safe = safe_reward(reward)
+        safe = safe_reward(0.01)
 
         score_breakdown = {
             "status": "updated",
@@ -743,14 +789,14 @@ def auto_fix_console(task_id, current_path):
             "- Suggested fix generated\n"
             f"- File updated: {current_path}\n"
             f"- Reward impact: {safe:.3f}\n"
-            f"- Episode done: {done}"
+            f"- Episode done: False"
         )
 
         thinking = build_agent_thinking(AGENT_TRACE)
 
         return (
             fixed_code,
-            f"Auto-fix applied.\nReward: {safe:.3f}\nDone: {done}",
+            f"{message}\nReward: {safe:.3f}\nDone: False",
             score_breakdown,
             build_agent_trace(AGENT_TRACE),
             verdict,
@@ -769,6 +815,240 @@ def auto_fix_console(task_id, current_path):
         )
 
 
+def _extract_error_line(language: str, stderr: str) -> Optional[int]:
+    if not stderr:
+        return None
+
+    language = (language or "").lower().strip()
+
+    if language == "python":
+        match = re.search(r"line\s+(\d+)", stderr)
+        if match:
+            return int(match.group(1))
+
+    if language == "java":
+        match = re.search(r"Main\.java:(\d+)", stderr)
+        if match:
+            return int(match.group(1))
+
+    if language == "cpp":
+        match = re.search(r":(\d+):\d+:", stderr)
+        if match:
+            return int(match.group(1))
+
+    return None
+
+
+def _line_reason(language: str, line: str) -> str:
+    clean = (line or "").strip()
+
+    if not clean:
+        return "Blank line skipped."
+
+    if clean.startswith("import ") or clean.startswith("#include"):
+        return "Import/include is prepared before execution continues."
+
+    if clean.startswith("def ") or clean.startswith("class "):
+        return "Definition is registered in memory."
+
+    if clean.startswith("public class") or clean.startswith("class "):
+        return "Class structure is prepared."
+
+    if clean.startswith("if ") or clean.startswith("elif ") or clean.startswith("else"):
+        return "A condition is evaluated here."
+
+    if clean.startswith("for ") or clean.startswith("while "):
+        return "A loop starts or continues here."
+
+    if clean.startswith("return"):
+        return "A value is returned from the current scope."
+
+    if "print(" in clean or "System.out.println" in clean or "cout" in clean:
+        return "This line sends output to the console."
+
+    if "=" in clean and "==" not in clean and "!=" not in clean and ">=" not in clean and "<=" not in clean:
+        return "A variable is assigned or updated here."
+
+    if "(" in clean and ")" in clean:
+        return "A function or method call is triggered here."
+
+    return "This line is evaluated in sequence."
+
+
+def _simulation_header_badge(status: str) -> str:
+    normalized = str(status or "completed").strip().lower()
+
+    if normalized in {"error", "failed", "failure", "compile_error", "runtime_error"}:
+        return '<span class="sim-badge sim-badge-error">ERROR DETECTED</span>'
+    if normalized in {"success", "ok", "completed", "pass", "passed"}:
+        return '<span class="sim-badge sim-badge-success">TRACE COMPLETED</span>'
+
+    return '<span class="sim-badge sim-badge-running">SIMULATED RUN</span>'
+
+
+def _simulation_thinking_state(status: str) -> str:
+    normalized = str(status or "running").strip().lower()
+
+    if normalized in {"error", "failed", "failure", "compile_error", "runtime_error"}:
+        label = "Thinking stopped at the failure point"
+    elif normalized in {"success", "ok", "completed", "pass", "passed"}:
+        label = "Thinking completed across the execution path"
+    else:
+        label = "Thinking through the execution path"
+
+    return (
+        '<div class="sim-thinking-row">'
+        '<span class="sim-thinking-pulse"></span>'
+        f'<span class="sim-thinking-copy">{html.escape(label)}</span>'
+        '<span class="sim-thinking-dots"><span></span><span></span><span></span></span>'
+        '</div>'
+    )
+
+
+def _build_phase_cards(status: str, error_line: Optional[int], stdout: str, stderr: str) -> str:
+    has_error = error_line is not None or bool((stderr or "").strip())
+    phases = [
+        ("Initialize", "Workspace and runtime settings prepared.", "done"),
+        ("Parse Code", "Language structure and syntax shape inspected.", "done"),
+        ("Simulate Flow", "Execution path is walked top-to-bottom.", "current"),
+        (
+            "Finalize",
+            "Execution ends with output or an error stop.",
+            "error" if has_error else "success",
+        ),
+    ]
+
+    cards = ['<div class="sim-phase-grid">']
+    for title, desc, state in phases:
+        cards.append(
+            f'<div class="sim-phase-card sim-phase-{state}">'
+            f'<div class="sim-phase-title">{html.escape(title)}</div>'
+            f'<div class="sim-phase-desc">{html.escape(desc)}</div>'
+            '</div>'
+        )
+    cards.append('</div>')
+    return ''.join(cards)
+
+
+def build_simulation_trace(language: str, code: str, stdout: str, stderr: str) -> str:
+    language = str(language or "python").strip().lower()
+    code = str(code or "")
+    stdout = str(stdout or "")
+    stderr = str(stderr or "")
+
+    if not code.strip():
+        return """
+        <div class="sim-shell">
+            <div class="sim-shell-header">
+                <div>
+                    <div class="sim-shell-title">Execution Intelligence</div>
+                    <div class="sim-shell-subtitle">Run the simulator to see how the code likely moved through execution.</div>
+                </div>
+                <span class="sim-badge sim-badge-running">WAITING</span>
+            </div>
+            <div class="sim-thinking-row sim-thinking-row-waiting">
+                <span class="sim-thinking-pulse"></span>
+                <span class="sim-thinking-copy">Thinking will animate here when the live trace opens.</span>
+                <span class="sim-thinking-dots"><span></span><span></span><span></span></span>
+            </div>
+            <div class="sim-empty-state">No code available for simulation yet.</div>
+        </div>
+        """
+
+    lines = code.splitlines()
+    error_line = _extract_error_line(language, stderr)
+    non_empty_lines = [line for line in lines if line.strip()]
+    status = "error" if error_line is not None or stderr.strip() else "success"
+    header_badge = _simulation_header_badge(status)
+
+    cards: List[str] = []
+    cards.append('<div class="sim-shell">')
+    cards.append('<div class="sim-shell-header">')
+    cards.append('<div>')
+    cards.append('<div class="sim-shell-title">Execution Intelligence</div>')
+    cards.append('<div class="sim-shell-subtitle">Live-style reasoning for how the current program likely executed.</div>')
+    cards.append('</div>')
+    cards.append(header_badge)
+    cards.append('</div>')
+    cards.append(_simulation_thinking_state(status))
+
+    cards.append('<div class="sim-meta-strip">')
+    cards.append(f'<div class="sim-meta-pill"><span>Language</span><strong>{html.escape(language.upper())}</strong></div>')
+    cards.append(f'<div class="sim-meta-pill"><span>Active lines</span><strong>{len(non_empty_lines)}</strong></div>')
+    cards.append(f'<div class="sim-meta-pill"><span>Error line</span><strong>{error_line if error_line is not None else "None"}</strong></div>')
+    cards.append('</div>')
+
+    cards.append(_build_phase_cards(status, error_line, stdout, stderr))
+
+    cards.append('<div class="sim-section-title">Execution Timeline</div>')
+
+    visited_any = False
+
+    for idx, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+
+        visited_any = True
+        state_class = "sim-step-active"
+        state_label = "SIMULATED"
+
+        if error_line is not None and idx == error_line:
+            state_class = "sim-step-error"
+            state_label = "STOPPED HERE"
+        elif error_line is None and idx == len(lines):
+            state_class = "sim-step-success"
+            state_label = "COMPLETED"
+
+        cards.append(f'<div class="sim-step-card {state_class}">')
+        cards.append('<div class="sim-step-top">')
+        cards.append(f'<div class="sim-step-line">Line {idx}</div>')
+        cards.append(f'<div class="sim-step-state">{html.escape(state_label)}</div>')
+        cards.append('</div>')
+        cards.append(f'<pre class="sim-code-block"><code>{html.escape(line)}</code></pre>')
+        cards.append(f'<div class="sim-step-reason">{html.escape(_line_reason(language, line))}</div>')
+        cards.append('</div>')
+
+        if error_line is not None and idx == error_line:
+            cards.append('<div class="sim-stop-card">')
+            cards.append('<div class="sim-stop-title">Execution stopped at this point.</div>')
+            cards.append('<div class="sim-stop-desc">The runtime likely failed on this line or immediately after it, so the simulated trace ends here.</div>')
+            if stderr.strip():
+                cards.append(f'<pre class="sim-terminal-block"><code>{html.escape(stderr.strip())}</code></pre>')
+            cards.append('</div>')
+            cards.append('</div>')
+            return ''.join(cards)
+
+    if not visited_any:
+        cards.append('<div class="sim-empty-state">The file contains only blank lines, so there is no execution path to simulate.</div>')
+        cards.append('</div>')
+        return ''.join(cards)
+
+    cards.append('<div class="sim-section-title">Final Result</div>')
+
+    if stdout.strip():
+        cards.append('<div class="sim-result-card sim-result-success">')
+        cards.append('<div class="sim-result-title">Program output</div>')
+        cards.append(f'<pre class="sim-terminal-block"><code>{html.escape(stdout.strip())}</code></pre>')
+        cards.append('</div>')
+    elif stderr.strip():
+        cards.append('<div class="sim-result-card sim-result-error">')
+        cards.append('<div class="sim-result-title">Runtime / compile details</div>')
+        cards.append(f'<pre class="sim-terminal-block"><code>{html.escape(stderr.strip())}</code></pre>')
+        cards.append('</div>')
+    else:
+        cards.append('<div class="sim-result-card sim-result-neutral">')
+        cards.append('<div class="sim-result-title">Execution summary</div>')
+        cards.append('<div class="sim-result-copy">The program completed without visible console output.</div>')
+        cards.append('</div>')
+
+    cards.append('</div>')
+    return ''.join(cards)
+
+
+def close_simulation_drawer():
+    return gr.update(visible=False)
+
+
 def run_playground(language, code):
     result = RuntimeDebugger.analyze_code(language, code)
 
@@ -779,6 +1059,34 @@ def run_playground(language, code):
     )
 
     return summary, result["stdout"], result["stderr"]
+
+
+def run_playground_simulation(language, code):
+    language = str(language or "python")
+    code = str(code or "")
+
+    result = RuntimeDebugger.analyze_code(language, code)
+
+    summary = (
+        f"Status: {result['status']}\n"
+        f"Message: {result['message']}\n"
+        f"Hint: {result['hint']}"
+    )
+
+    trace = build_simulation_trace(
+        language=language,
+        code=code,
+        stdout=result["stdout"],
+        stderr=result["stderr"],
+    )
+
+    return (
+        summary,
+        result["stdout"],
+        result["stderr"],
+        gr.update(visible=True),
+        trace,
+    )
 
 
 def detect_language_from_filename(filename):
@@ -822,15 +1130,692 @@ def import_playground_file(file_path):
 def create_demo():
     with gr.Blocks(title="CodeFix Arena") as demo:
         gr.HTML("""
-        <div style="padding: 14px 6px 4px 6px;">
-            <h1 style="margin-bottom: 8px;">🚀 CodeFix Arena</h1>
-            <p style="font-size: 17px; margin-bottom: 8px;">
-                Debug. Refactor. Improve. Work with code like a real developer.
-            </p>
-            <p style="margin-top: 0; color: #666;">
-                Use <b>Arena</b> for guided coding challenges with evaluation and reasoning traces,
-                or switch to <b>Playground</b> to test your own files freely.
-            </p>
+        <style>
+            :root {
+                --cf-bg: #050505;
+                --cf-bg-soft: #0a0a0a;
+                --cf-panel: #0d0d0d;
+                --cf-panel-2: #111111;
+                --cf-panel-3: #151515;
+                --cf-border: rgba(255, 255, 255, 0.08);
+                --cf-border-strong: rgba(255, 255, 255, 0.14);
+                --cf-text: #f5f5f5;
+                --cf-text-soft: #b5b5b5;
+                --cf-text-muted: #8b8b8b;
+                --cf-accent: #7eb6ff;
+                --cf-accent-soft: rgba(126, 182, 255, 0.12);
+                --cf-success: #7de2b4;
+                --cf-error: #ff8c8c;
+                --cf-warning: #e5c07b;
+                --cf-shadow: 0 14px 36px rgba(0, 0, 0, 0.45);
+            }
+
+            html, body, .gradio-container {
+                background: var(--cf-bg) !important;
+                color: var(--cf-text) !important;
+            }
+
+            .gradio-container {
+                font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
+            }
+
+            .gradio-container .block,
+            .gradio-container .gr-box,
+            .gradio-container .gr-panel,
+            .gradio-container .gr-form,
+            .gradio-container .gr-group,
+            .gradio-container .gr-accordion,
+            .gradio-container .gradio-group,
+            .gradio-container .gradio-html,
+            .gradio-container .gradio-json,
+            .gradio-container .gradio-markdown {
+                background: var(--cf-panel) !important;
+                border: 1px solid var(--cf-border) !important;
+                box-shadow: none !important;
+            }
+
+            .gradio-container .contain,
+            .gradio-container .wrap,
+            .gradio-container .gap {
+                background: transparent !important;
+            }
+
+            .gradio-container h1,
+            .gradio-container h2,
+            .gradio-container h3,
+            .gradio-container h4,
+            .gradio-container label,
+            .gradio-container .prose,
+            .gradio-container .prose * {
+                color: var(--cf-text) !important;
+            }
+
+            .gradio-container .prose p,
+            .gradio-container .prose li,
+            .gradio-container .prose strong,
+            .gradio-container .prose em {
+                color: var(--cf-text-soft) !important;
+            }
+
+            .gradio-container textarea,
+            .gradio-container input,
+            .gradio-container select,
+            .gradio-container .cm-editor,
+            .gradio-container .cm-scroller,
+            .gradio-container .cm-gutters,
+            .gradio-container .cm-activeLine,
+            .gradio-container .cm-activeLineGutter,
+            .gradio-container .cm-content,
+            .gradio-container .cm-line,
+            .gradio-container .cm-tooltip,
+            .gradio-container .ace_editor,
+            .gradio-container .ace_gutter,
+            .gradio-container .ace_content,
+            .gradio-container .ace_scroller {
+                background: #0a0a0a !important;
+                color: var(--cf-text) !important;
+                border-color: var(--cf-border) !important;
+            }
+
+            .gradio-container textarea::placeholder,
+            .gradio-container input::placeholder {
+                color: var(--cf-text-muted) !important;
+            }
+
+            .gradio-container .cm-gutters,
+            .gradio-container .ace_gutter {
+                color: #777 !important;
+            }
+
+            .gradio-container button {
+                background: #111111 !important;
+                color: var(--cf-text) !important;
+                border: 1px solid var(--cf-border) !important;
+                box-shadow: none !important;
+            }
+
+            .gradio-container button:hover {
+                background: #161616 !important;
+                border-color: var(--cf-border-strong) !important;
+            }
+
+            .gradio-container button.primary,
+            .gradio-container button[class*="primary"] {
+                background: #101010 !important;
+                border: 1px solid rgba(126, 182, 255, 0.25) !important;
+                box-shadow: inset 0 0 0 1px rgba(126, 182, 255, 0.08) !important;
+            }
+
+            .gradio-container button.primary:hover,
+            .gradio-container button[class*="primary"]:hover {
+                background: #141414 !important;
+                border-color: rgba(126, 182, 255, 0.40) !important;
+            }
+
+            .gradio-container .tab-nav {
+                background: #070707 !important;
+                border: 1px solid var(--cf-border) !important;
+                border-radius: 16px !important;
+                padding: 6px !important;
+            }
+
+            .gradio-container .tab-nav button {
+                border-radius: 12px !important;
+                background: transparent !important;
+                border: 1px solid transparent !important;
+            }
+
+            .gradio-container .tab-nav button.selected {
+                background: #121212 !important;
+                border-color: var(--cf-border-strong) !important;
+            }
+
+            .gradio-container .label-wrap,
+            .gradio-container .label-wrap span,
+            .gradio-container .message,
+            .gradio-container .caption,
+            .gradio-container .hint {
+                color: var(--cf-text-soft) !important;
+            }
+
+            .gradio-container .gr-accordion summary,
+            .gradio-container .gr-accordion summary * {
+                color: var(--cf-text) !important;
+            }
+
+            .gradio-container pre,
+            .gradio-container code {
+                background: #090909 !important;
+                color: #ededed !important;
+            }
+
+            .top-shell {
+                margin-bottom: 12px;
+                padding: 22px 20px 16px 20px;
+                border-radius: 20px;
+                background: linear-gradient(180deg, #0c0c0c, #070707);
+                border: 1px solid var(--cf-border);
+                box-shadow: var(--cf-shadow);
+                text-align: center;
+            }
+
+            .top-shell h1 {
+                margin: 0 0 12px 0;
+                font-size: 46px;
+                font-weight: 900;
+                letter-spacing: -0.04em;
+                line-height: 1.05;
+                text-align: center;
+                color: #7cc7ff;
+                text-shadow: 0 0 20px rgba(124, 199, 255, 0.18);
+            }
+
+            .top-shell p {
+                margin: 0 0 8px 0;
+                line-height: 1.6;
+                color: var(--cf-text-soft);
+                text-align: center;
+            }
+
+            .top-shell-strip {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 10px;
+                margin-bottom: 14px;
+                justify-content: center;
+            }
+
+            .top-shell-pill,
+            .playground-chip {
+                display: inline-flex;
+                align-items: center;
+                padding: 8px 12px;
+                border-radius: 999px;
+                font-size: 11px;
+                font-weight: 800;
+                letter-spacing: 0.06em;
+                text-transform: uppercase;
+                background: #101010;
+                color: #dddddd;
+                border: 1px solid var(--cf-border);
+            }
+
+            .playground-hero {
+                margin-bottom: 10px;
+                padding: 18px 18px 10px 18px;
+                border-radius: 20px;
+                background: linear-gradient(180deg, #0c0c0c, #080808);
+                border: 1px solid var(--cf-border);
+                box-shadow: var(--cf-shadow);
+            }
+
+            .playground-hero h2 {
+                margin: 0 0 8px 0;
+                font-size: 28px;
+                letter-spacing: -0.03em;
+                color: #ffffff;
+            }
+
+            .playground-hero p {
+                margin: 0 0 10px 0;
+                color: var(--cf-text-soft);
+                line-height: 1.6;
+                max-width: 920px;
+            }
+
+            .playground-chip-row {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 10px;
+                margin-bottom: 10px;
+            }
+
+            #simulation-drawer {
+                position: fixed !important;
+                top: 62px;
+                right: 0;
+                width: min(500px, 96vw);
+                height: calc(100vh - 74px);
+                overflow-y: auto !important;
+                z-index: 999;
+                padding: 16px !important;
+                box-shadow: -20px 0 50px rgba(0, 0, 0, 0.65);
+                border-left: 1px solid rgba(255, 255, 255, 0.08);
+                background: rgba(5, 5, 5, 0.98);
+                backdrop-filter: blur(10px);
+                animation: simDrawerIn 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+                will-change: transform, opacity;
+            }
+
+            #simulation-drawer .block {
+                background: transparent !important;
+                border: none !important;
+                box-shadow: none !important;
+                padding: 0 !important;
+            }
+
+            .sim-open-btn button {
+                background: #0f0f0f !important;
+                color: #f4f4f4 !important;
+                border: 1px solid rgba(126, 182, 255, 0.28) !important;
+                box-shadow: inset 0 0 0 1px rgba(126, 182, 255, 0.08) !important;
+            }
+
+            .sim-open-btn button:hover {
+                background: #141414 !important;
+                border-color: rgba(126, 182, 255, 0.42) !important;
+            }
+
+            .sim-close-btn button {
+                width: 100%;
+                background: #111111 !important;
+                color: #e9e9e9 !important;
+                border: 1px solid var(--cf-border) !important;
+            }
+
+            .sim-shell {
+                color: var(--cf-text);
+                font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                padding-bottom: 18px;
+            }
+
+            .sim-shell-header {
+                position: sticky;
+                top: 0;
+                z-index: 3;
+                display: flex;
+                align-items: flex-start;
+                justify-content: space-between;
+                gap: 12px;
+                margin: -2px 0 12px 0;
+                padding: 16px;
+                border-radius: 18px;
+                background: linear-gradient(180deg, #101010, #0a0a0a);
+                border: 1px solid var(--cf-border);
+                box-shadow: 0 12px 28px rgba(0, 0, 0, 0.38);
+            }
+
+            .sim-shell-title {
+                font-size: 20px;
+                font-weight: 800;
+                margin-bottom: 4px;
+                color: #ffffff;
+            }
+
+            .sim-shell-subtitle {
+                font-size: 13px;
+                line-height: 1.55;
+                color: var(--cf-text-soft);
+                max-width: 320px;
+            }
+
+            .sim-thinking-row {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                margin: 0 0 16px 0;
+                padding: 12px 14px;
+                border-radius: 16px;
+                background: linear-gradient(180deg, #0e0e0e, #090909);
+                border: 1px solid rgba(126, 182, 255, 0.14);
+                box-shadow: inset 0 0 0 1px rgba(126, 182, 255, 0.03);
+            }
+
+            .sim-thinking-row-waiting {
+                margin-top: 2px;
+            }
+
+            .sim-thinking-pulse {
+                width: 10px;
+                height: 10px;
+                border-radius: 999px;
+                background: #8ab8ff;
+                box-shadow: 0 0 0 0 rgba(138, 184, 255, 0.45);
+                animation: simPulse 1.8s infinite;
+                flex: 0 0 auto;
+            }
+
+            .sim-thinking-copy {
+                font-size: 12px;
+                color: #d9e8ff;
+                letter-spacing: 0.01em;
+            }
+
+            .sim-thinking-dots {
+                display: inline-flex;
+                align-items: center;
+                gap: 5px;
+                margin-left: auto;
+            }
+
+            .sim-thinking-dots span {
+                width: 6px;
+                height: 6px;
+                border-radius: 999px;
+                background: rgba(138, 184, 255, 0.9);
+                animation: simDotBounce 1.15s infinite ease-in-out;
+            }
+
+            .sim-thinking-dots span:nth-child(2) {
+                animation-delay: 0.15s;
+            }
+
+            .sim-thinking-dots span:nth-child(3) {
+                animation-delay: 0.3s;
+            }
+
+            .sim-badge {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                padding: 8px 12px;
+                border-radius: 999px;
+                font-size: 11px;
+                font-weight: 800;
+                letter-spacing: 0.06em;
+                white-space: nowrap;
+                background: #111111;
+            }
+
+            .sim-badge-running {
+                color: #d4e8ff;
+                border: 1px solid rgba(126, 182, 255, 0.30);
+                box-shadow: 0 0 0 1px rgba(126, 182, 255, 0.06), 0 0 20px rgba(126, 182, 255, 0.10);
+            }
+
+            .sim-badge-success {
+                color: #cbf7df;
+                border: 1px solid rgba(125, 226, 180, 0.28);
+            }
+
+            .sim-badge-error {
+                color: #ffd0d0;
+                border: 1px solid rgba(255, 140, 140, 0.28);
+            }
+
+            .sim-meta-strip {
+                display: grid;
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+                gap: 10px;
+                margin-bottom: 16px;
+            }
+
+            .sim-meta-pill,
+            .sim-phase-card,
+            .sim-step-card,
+            .sim-stop-card,
+            .sim-result-card,
+            .sim-empty-state {
+                background: linear-gradient(180deg, #101010, #0b0b0b);
+                border: 1px solid var(--cf-border);
+                box-shadow: none;
+            }
+
+            .sim-meta-pill {
+                padding: 12px 14px;
+                border-radius: 16px;
+            }
+
+            .sim-meta-pill span {
+                display: block;
+                font-size: 11px;
+                letter-spacing: 0.05em;
+                text-transform: uppercase;
+                color: var(--cf-text-muted);
+                margin-bottom: 6px;
+            }
+
+            .sim-meta-pill strong {
+                font-size: 15px;
+                color: #ffffff;
+            }
+
+            .sim-phase-grid {
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 10px;
+                margin-bottom: 18px;
+            }
+
+            .sim-phase-card {
+                padding: 14px;
+                border-radius: 16px;
+            }
+
+            .sim-phase-title {
+                font-size: 13px;
+                font-weight: 800;
+                margin-bottom: 6px;
+                color: #ffffff;
+            }
+
+            .sim-phase-desc {
+                font-size: 12px;
+                line-height: 1.5;
+                color: var(--cf-text-soft);
+            }
+
+            .sim-phase-done {
+                border-color: rgba(255, 255, 255, 0.10);
+            }
+
+            .sim-phase-current {
+                border-color: rgba(126, 182, 255, 0.35);
+                box-shadow: inset 0 0 0 1px rgba(126, 182, 255, 0.10);
+            }
+
+            .sim-phase-success {
+                border-color: rgba(125, 226, 180, 0.22);
+            }
+
+            .sim-phase-error {
+                border-color: rgba(255, 140, 140, 0.22);
+            }
+
+            .sim-section-title {
+                font-size: 12px;
+                font-weight: 800;
+                letter-spacing: 0.08em;
+                text-transform: uppercase;
+                color: #d7d7d7;
+                margin: 18px 0 10px 0;
+            }
+
+            .sim-step-card,
+            .sim-stop-card,
+            .sim-result-card,
+            .sim-empty-state {
+                margin-bottom: 12px;
+                padding: 14px;
+                border-radius: 18px;
+            }
+
+            .sim-step-card {
+                border-left: 3px solid rgba(126, 182, 255, 0.46);
+                transition: transform 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease, background 0.22s ease;
+            }
+
+            .sim-step-card:hover {
+                transform: translateY(-1px);
+                border-left-color: rgba(126, 182, 255, 0.72);
+            }
+
+            .sim-step-active {
+                box-shadow: 0 0 0 1px rgba(126, 182, 255, 0.10), 0 0 22px rgba(126, 182, 255, 0.10), inset 0 0 0 1px rgba(126, 182, 255, 0.05);
+                animation: simActiveGlow 1.9s ease-in-out infinite;
+            }
+
+            .sim-step-error {
+                border-left-color: rgba(255, 140, 140, 0.88);
+                background: linear-gradient(180deg, #160c0c, #0b0b0b);
+            }
+
+            .sim-step-success {
+                border-left-color: rgba(125, 226, 180, 0.84);
+            }
+
+            .sim-step-top {
+                display: flex;
+                justify-content: space-between;
+                gap: 10px;
+                align-items: center;
+                margin-bottom: 10px;
+            }
+
+            .sim-step-line {
+                font-size: 14px;
+                font-weight: 800;
+                color: #ffffff;
+            }
+
+            .sim-step-state {
+                font-size: 10px;
+                font-weight: 800;
+                letter-spacing: 0.08em;
+                color: #d8d8d8;
+                background: #101010;
+                border: 1px solid var(--cf-border);
+                padding: 6px 10px;
+                border-radius: 999px;
+            }
+
+            .sim-code-block,
+            .sim-terminal-block {
+                margin: 0 0 10px 0;
+                padding: 12px;
+                border-radius: 14px;
+                overflow-x: auto;
+                background: #060606 !important;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                color: #efefef;
+                font-size: 12px;
+                line-height: 1.6;
+            }
+
+            .sim-step-reason,
+            .sim-result-copy,
+            .sim-stop-desc {
+                color: var(--cf-text-soft);
+                font-size: 13px;
+                line-height: 1.6;
+            }
+
+            .sim-stop-title,
+            .sim-result-title {
+                font-size: 14px;
+                font-weight: 800;
+                color: #ffffff;
+                margin-bottom: 8px;
+            }
+
+            .sim-result-success {
+                border-left: 3px solid rgba(125, 226, 180, 0.84);
+            }
+
+            .sim-result-error,
+            .sim-stop-card {
+                border-left: 3px solid rgba(255, 140, 140, 0.84);
+            }
+
+            .sim-result-neutral {
+                border-left: 3px solid rgba(126, 182, 255, 0.50);
+            }
+
+
+            @keyframes simDrawerIn {
+                0% {
+                    opacity: 0;
+                    transform: translateX(26px);
+                }
+                100% {
+                    opacity: 1;
+                    transform: translateX(0);
+                }
+            }
+
+            @keyframes simPulse {
+                0% {
+                    box-shadow: 0 0 0 0 rgba(138, 184, 255, 0.42);
+                    opacity: 0.95;
+                }
+                70% {
+                    box-shadow: 0 0 0 10px rgba(138, 184, 255, 0);
+                    opacity: 1;
+                }
+                100% {
+                    box-shadow: 0 0 0 0 rgba(138, 184, 255, 0);
+                    opacity: 0.95;
+                }
+            }
+
+            @keyframes simDotBounce {
+                0%, 80%, 100% {
+                    transform: translateY(0);
+                    opacity: 0.35;
+                }
+                40% {
+                    transform: translateY(-3px);
+                    opacity: 1;
+                }
+            }
+
+            @keyframes simActiveGlow {
+                0%, 100% {
+                    box-shadow: 0 0 0 1px rgba(126, 182, 255, 0.10), 0 0 18px rgba(126, 182, 255, 0.08), inset 0 0 0 1px rgba(126, 182, 255, 0.04);
+                }
+                50% {
+                    box-shadow: 0 0 0 1px rgba(126, 182, 255, 0.16), 0 0 26px rgba(126, 182, 255, 0.16), inset 0 0 0 1px rgba(126, 182, 255, 0.08);
+                }
+            }
+            .gradio-container ::-webkit-scrollbar {
+                width: 10px;
+                height: 10px;
+            }
+
+            .gradio-container ::-webkit-scrollbar-track {
+                background: #060606;
+            }
+
+            .gradio-container ::-webkit-scrollbar-thumb {
+                background: #232323;
+                border-radius: 999px;
+                border: 2px solid #060606;
+            }
+
+            .gradio-container ::-webkit-scrollbar-thumb:hover {
+                background: #323232;
+            }
+
+            @media (max-width: 1080px) {
+                #simulation-drawer {
+                    width: min(100vw, 560px);
+                }
+            }
+
+            @media (max-width: 760px) {
+                #simulation-drawer {
+                    top: 0;
+                    width: 100vw;
+                    height: 100vh;
+                    border-left: none;
+                }
+
+                .sim-meta-strip,
+                .sim-phase-grid {
+                    grid-template-columns: 1fr;
+                }
+            }
+        </style>
+
+        <div class="top-shell">
+            <div class="top-shell-strip">
+                <span class="top-shell-pill">AI Coding Arena</span>
+                <span class="top-shell-pill">Execution Trace</span>
+                <span class="top-shell-pill">Judge-Ready UI</span>
+            </div>
+            <h1>CodeFix Arena</h1>
+            <p>Debug, refactor, and inspect execution in a dark AI coding workspace designed for guided challenges and free-form playground testing.</p>
+            <p style="margin-top: 0; color: #8b8b8b;">Use <b style="color:#ffffff;">Arena</b> for structured challenge solving and <b style="color:#ffffff;">Playground</b> for live execution tracing without disturbing the validated backend pipeline.</p>
         </div>
         """)
 
@@ -984,16 +1969,18 @@ Ask natural questions like:
                 )
 
             with gr.Tab("Playground"):
-                gr.Markdown(
+                gr.HTML(
                     """
-## 🧪 Free Playground
-
-Test your own code here:
-- paste code directly
-- upload a source file
-- switch language manually
-- run quick analysis without using the challenge flow
-"""
+                    <div class="playground-hero">
+                        <div class="playground-chip-row">
+                            <span class="playground-chip">Execution Intelligence</span>
+                            <span class="playground-chip">Live Trace</span>
+                            <span class="playground-chip">Judge-Friendly Demo</span>
+                        </div>
+                        <h2>🧪 Black Playground</h2>
+                        <p>Paste code, import a source file, run fast analysis, and open a plain-black execution panel that simulates how the program likely moved through its logic.</p>
+                    </div>
+                    """
                 )
 
                 with gr.Row():
@@ -1017,12 +2004,18 @@ Test your own code here:
                     lines=24,
                 )
 
-                analyze_button = gr.Button("Run Analysis", variant="primary")
+                with gr.Row():
+                    analyze_button = gr.Button("Run Analysis", variant="primary")
+                    simulate_button = gr.Button("🧠 Open Live Trace", elem_classes=["sim-open-btn"])
 
                 with gr.Row():
                     playground_summary = gr.Textbox(label="Summary / Import Status", lines=6)
                     playground_stdout = gr.Textbox(label="Output", lines=8)
                     playground_stderr = gr.Textbox(label="Errors / Warnings", lines=8)
+
+                with gr.Column(visible=False, elem_id="simulation-drawer") as simulation_drawer:
+                    close_sim_button = gr.Button("Hide Execution Panel", elem_classes=["sim-close-btn"])
+                    simulation_output = gr.HTML(build_simulation_trace("python", "", "", ""))
 
                 import_file_button.click(
                     fn=import_playground_file,
@@ -1034,6 +2027,24 @@ Test your own code here:
                     fn=run_playground,
                     inputs=[playground_language, playground_code],
                     outputs=[playground_summary, playground_stdout, playground_stderr],
+                )
+
+                simulate_button.click(
+                    fn=run_playground_simulation,
+                    inputs=[playground_language, playground_code],
+                    outputs=[
+                        playground_summary,
+                        playground_stdout,
+                        playground_stderr,
+                        simulation_drawer,
+                        simulation_output,
+                    ],
+                )
+
+                close_sim_button.click(
+                    fn=close_simulation_drawer,
+                    inputs=[],
+                    outputs=[simulation_drawer],
                 )
 
     return demo
@@ -1115,3 +2126,4 @@ def main():
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "7860"))
     uvicorn.run(app, host="0.0.0.0", port=port)
+
